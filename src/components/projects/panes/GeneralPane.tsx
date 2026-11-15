@@ -18,6 +18,7 @@ import { DirectoryBrowser } from '@/components/projects/DirectoryBrowser'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 import {
   Command,
@@ -55,7 +56,8 @@ import {
 } from '@/components/ui/select'
 import { BackendLabel, getBackendLabel } from '@/components/ui/backend-label'
 import { useInstalledBackends } from '@/hooks/useInstalledBackends'
-import type { CliBackend } from '@/types/preferences'
+import { modelOptions, type CliBackend } from '@/types/preferences'
+import type { ProjectPlanQueueSettings } from '@/types/projects'
 import { overrideHint } from './override-hint'
 
 const blurOnEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -146,6 +148,15 @@ export function GeneralPane({
     (branch: string) => {
       setBranchPopoverOpen(false)
       updateSettings.mutate({ projectId, defaultBranch: branch })
+    },
+    [projectId, updateSettings]
+  )
+
+  const planQueueSettings: ProjectPlanQueueSettings =
+    project?.plan_queue_settings ?? { enabled: false, default_model: null }
+  const savePlanQueueSettings = useCallback(
+    (next: ProjectPlanQueueSettings) => {
+      updateSettings.mutate({ projectId, planQueueSettings: next })
     },
     [projectId, updateSettings]
   )
@@ -548,6 +559,65 @@ export function GeneralPane({
               rows={4}
               className="resize-y text-base md:text-sm"
             />
+          </InlineField>
+        </SettingsSection>
+
+        <SettingsSection
+          title="Plan queue"
+          description="Runs the plans in each worktree's .jean/plans/ folder one by one. Before you turn it on, add this project to excludeProjects in the jean-queue config.json (or stop jean-queue), so two runners do not take the same plans."
+        >
+          <InlineField
+            label="Run plan queue"
+            description="Off by default"
+            htmlFor="project-plan-queue-enabled"
+          >
+            <Switch
+              id="project-plan-queue-enabled"
+              checked={planQueueSettings.enabled}
+              onCheckedChange={enabled =>
+                savePlanQueueSettings({ ...planQueueSettings, enabled })
+              }
+              disabled={updateSettings.isPending}
+            />
+          </InlineField>
+
+          <InlineField
+            label="Default model"
+            description="For plans with no <!-- model: --> pin"
+            htmlFor="project-plan-queue-model"
+          >
+            <Select
+              value={planQueueSettings.default_model ?? 'global-default'}
+              onValueChange={value =>
+                savePlanQueueSettings({
+                  ...planQueueSettings,
+                  default_model: value === 'global-default' ? null : value,
+                })
+              }
+            >
+              <SelectTrigger
+                id="project-plan-queue-model"
+                className="w-full min-w-0 flex-1"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="global-default">Use Jean default</SelectItem>
+                {modelOptions.map(option => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+                {planQueueSettings.default_model &&
+                  !modelOptions.some(
+                    o => o.value === planQueueSettings.default_model
+                  ) && (
+                    <SelectItem value={planQueueSettings.default_model}>
+                      {planQueueSettings.default_model}
+                    </SelectItem>
+                  )}
+              </SelectContent>
+            </Select>
           </InlineField>
         </SettingsSection>
       </div>

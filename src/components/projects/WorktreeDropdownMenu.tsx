@@ -8,6 +8,7 @@ import {
   GitPullRequestArrow,
   Globe,
   ListChecks,
+  ListOrdered,
   Maximize,
   MoreHorizontal,
   Play,
@@ -114,6 +115,8 @@ export function WorktreeDropdownMenu({
     isBase,
     runScripts,
     preferences,
+    planQueueEnabled,
+    handleOpenPlanQueue,
     handleRun,
     handleRunCommand,
     handleOpenInFinder,
@@ -422,6 +425,13 @@ export function WorktreeDropdownMenu({
                 <Settings className="mr-2 h-4 w-4" />
                 Project Settings
               </DropdownMenuItem>
+
+              {planQueueEnabled && (
+                <DropdownMenuItem onClick={handleOpenPlanQueue}>
+                  <ListOrdered className="mr-2 h-4 w-4" />
+                  Plan queue…
+                </DropdownMenuItem>
+              )}
 
               <DropdownMenuSeparator />
 

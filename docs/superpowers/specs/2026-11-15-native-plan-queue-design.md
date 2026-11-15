@@ -305,3 +305,8 @@ be adopted after a switch, and the other way around.
 - slice 03: `gate` in a pending `Plan` is the reason its gate is not met (absent when met). `startedAt` (running) is absent when `.sid.txt` has no `at`; `reason` (failed) is empty when `.sid.txt` has none.
 - slice 03: retry and unskip give the plan the next `NNN-` prefix and keep the rest of the name. `plan_queue_add` strips a `.md` suffix and an `NNN-` prefix from the name before slugify, and rejects empty text.
 - slice 03: `get_plan_queue_summaries` returns raw worktree ids from the owning server; `usePlanQueueSummaries` scopes them like the project id, so they match canvas worktree ids for remote servers.
+- slice 04: the menu icon is reicon `OrderedList` (exported as `ListOrdered`), not lucide: a test forbids `lucide-react` imports in `src/`.
+- slice 04: reorder uses up/down buttons, not drag. The repo has no dnd library (canvas rows use native HTML5 drag), HTML5 drag does not work with touch at mobile width, and it would clash with the `.md` file drop zone in the same dialog.
+- slice 04: the blocker button is "Clear blocker", not "Clear & resume": `clear_blocked` only deletes the markers. A paused queue stays paused.
+- slice 04: the add area also has a "Choose .md files" button (file input, read with `File.text()`), because mobile has no file drag-drop.
+- slice 04: the default-model picker lists the Claude `modelOptions` plus "Use Jean default" (`null`). A saved id that is not in the list is still shown.

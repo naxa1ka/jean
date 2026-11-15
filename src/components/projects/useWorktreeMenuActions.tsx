@@ -5,6 +5,7 @@ import {
   useOpenWorktreeInFinder,
   useOpenWorktreeInTerminal,
   useOpenWorktreeInEditor,
+  useProjects,
   useRunScripts,
 } from '@/services/projects'
 import { usePreferences } from '@/services/preferences'
@@ -29,7 +30,12 @@ export function useWorktreeMenuActions({
   const { data: runScripts = [] } = useRunScripts(worktree.path)
   const { data: preferences } = usePreferences()
   const { data: sessionsData } = useSessions(worktree.id, worktree.path)
+  const { data: projects } = useProjects()
   const isBase = isBaseSession(worktree)
+  const planQueueEnabled = Boolean(
+    projects?.find(project => project.id === projectId)?.plan_queue_settings
+      ?.enabled
+  )
 
   const hasMessages = sessionsData?.sessions?.some(
     session => session.messages.length > 0
@@ -52,6 +58,15 @@ export function useWorktreeMenuActions({
     },
     [worktree.id]
   )
+
+  const handleOpenPlanQueue = useCallback(() => {
+    useUIStore.getState().setPlanQueueTarget({
+      id: worktree.id,
+      path: worktree.path,
+      project_id: worktree.project_id,
+      name: worktree.name,
+    })
+  }, [worktree.id, worktree.path, worktree.project_id, worktree.name])
 
   const handleOpenTerminalPanel = useCallback(() => {
     useTerminalStore.getState().addTerminal(worktree.id)
@@ -102,10 +117,12 @@ export function useWorktreeMenuActions({
     hasMessages,
     runScripts,
     preferences,
+    planQueueEnabled,
 
     // Handlers
     handleRun,
     handleRunCommand,
+    handleOpenPlanQueue,
     handleOpenTerminalPanel,
     handleOpenInFinder,
     handleOpenInTerminal,
