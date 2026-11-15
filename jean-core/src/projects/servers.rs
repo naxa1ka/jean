@@ -218,6 +218,7 @@ async fn create_server_project(
         sentry_base_url: None,
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
+        plan_queue_settings: None,
         server: Some(server),
     };
     data.add_project(project.clone());

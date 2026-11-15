@@ -809,6 +809,7 @@ pub async fn add_project(
         sentry_base_url: None,
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
+        plan_queue_settings: None,
         server: None,
     };
 
@@ -972,6 +973,7 @@ pub async fn init_project(
         sentry_base_url: None,
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
+        plan_queue_settings: None,
         server: None,
     };
 
@@ -1033,6 +1035,7 @@ pub async fn clone_project(
         sentry_base_url: None,
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
+        plan_queue_settings: None,
         server: None,
     };
 
@@ -5811,6 +5814,7 @@ pub async fn update_project_settings(
     sentry_projects: Option<Vec<crate::projects::types::SentryProjectLink>>,
     linked_project_ids: Option<Vec<String>>,
     auto_fix_settings: Option<Option<ProjectAutoFixSettings>>,
+    plan_queue_settings: Option<Option<crate::projects::types::ProjectPlanQueueSettings>>,
 ) -> Result<Project, String> {
     log::trace!("Updating settings for project: {project_id}");
 
@@ -5920,6 +5924,11 @@ pub async fn update_project_settings(
     if let Some(settings) = auto_fix_settings {
         log::trace!("Updating Mr. Robot settings: {settings:?}");
         project.auto_fix_settings = settings;
+    }
+
+    if let Some(settings) = plan_queue_settings {
+        log::trace!("Updating plan queue settings: {settings:?}");
+        project.plan_queue_settings = settings;
     }
 
     // Handle linked_project_ids with bidirectional sync
@@ -12955,6 +12964,7 @@ pub async fn create_folder(
         sentry_base_url: None,
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
+        plan_queue_settings: None,
         server: None,
     };
 
@@ -15707,6 +15717,7 @@ mod tests {
             sentry_base_url: None,
             linked_project_ids: Vec::new(),
             auto_fix_settings: None,
+            plan_queue_settings: None,
             server: None,
         };
 
@@ -15891,6 +15902,7 @@ mod tests {
             sentry_projects: Vec::new(),
             linked_project_ids: Vec::new(),
             auto_fix_settings: None,
+            plan_queue_settings: None,
             server: None,
         };
         save_projects_data(

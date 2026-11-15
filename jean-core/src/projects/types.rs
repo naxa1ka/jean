@@ -91,6 +91,16 @@ impl ProjectServer {
     }
 }
 
+/// Per-project native plan queue settings (`.jean/plans/` runner).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProjectPlanQueueSettings {
+    /// The runner starts plans for this project only when true.
+    pub enabled: bool,
+    /// Model for plans with no `<!-- model: <id> -->` pin. `None` = Jean's default.
+    pub default_model: Option<String>,
+}
+
 /// Per-project automated issue fixing settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectAutoFixSettings {
@@ -299,6 +309,9 @@ pub struct Project {
     /// Per-project automated issue fixing settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_fix_settings: Option<ProjectAutoFixSettings>,
+    /// Per-project native plan queue settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_queue_settings: Option<ProjectPlanQueueSettings>,
     /// SSH target when this project is a managed server (None = git repository)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<ProjectServer>,
@@ -1063,6 +1076,20 @@ mod label_tests {
         assert_eq!(parsed.planning_provider.as_deref(), Some("OpenRouter"));
         assert_eq!(parsed.planning_model.as_deref(), Some("opus"));
         assert!(parsed.yolo_provider.is_none());
+    }
+
+    #[test]
+    fn plan_queue_settings_missing_fields_use_defaults() {
+        let parsed: ProjectPlanQueueSettings =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(parsed, ProjectPlanQueueSettings::default());
+        assert!(!parsed.enabled);
+        assert!(parsed.default_model.is_none());
+
+        let parsed: ProjectPlanQueueSettings =
+            serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
+        assert!(parsed.enabled);
+        assert!(parsed.default_model.is_none());
     }
 
     #[test]
