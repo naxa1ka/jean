@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { PlanQueueSummary } from '@/types/plan-queue'
-import { planQueueStatusText } from './plan-queue-utils'
+import {
+  planQueueCanToggle,
+  planQueueNeedsAttention,
+  planQueueStatusText,
+} from './plan-queue-utils'
 
 const start = '2026-11-15T10:00:00Z'
 const now = Date.parse(start) + 4 * 60 * 1000 + 10_000
@@ -10,9 +14,11 @@ function summary(patch: Partial<PlanQueueSummary> = {}): PlanQueueSummary {
     worktreeId: 'wt',
     pending: 2,
     doneCount: 2,
+    failedCount: 0,
     total: 5,
     paused: false,
     blocked: false,
+    orphaned: false,
     ...patch,
   }
 }
@@ -56,5 +62,40 @@ describe('planQueueStatusText', () => {
     expect(
       planQueueStatusText(summary({ pending: 0, doneCount: 5 }), now)
     ).toBe('Queue 5/5 · done')
+  })
+
+  it('shows failures instead of done when plans failed', () => {
+    const s = summary({ pending: 0, doneCount: 3, failedCount: 2 })
+    expect(planQueueStatusText(s, now)).toBe('Queue 5/5 · 2 failed')
+    expect(planQueueNeedsAttention(s)).toBe(true)
+  })
+
+  it('adds the failed count while plans are left', () => {
+    const s = summary({ pending: 1, doneCount: 2, failedCount: 2 })
+    expect(planQueueStatusText(s, now)).toBe('Queue 4/5 · 1 pending · 2 failed')
+  })
+
+  it('shows stuck for a plan the runner does not own', () => {
+    const s = summary({ orphaned: true, paused: true })
+    expect(planQueueStatusText(s, now)).toBe(
+      'Queue stuck: plan left in running/'
+    )
+    expect(planQueueNeedsAttention(s)).toBe(true)
+  })
+})
+
+describe('planQueueCanToggle', () => {
+  it('hides Pause for a drained queue', () => {
+    expect(planQueueCanToggle(summary({ pending: 0, doneCount: 5 }))).toBe(
+      false
+    )
+  })
+
+  it('keeps Resume for a paused drained queue and Pause while work is left', () => {
+    expect(planQueueCanToggle(summary({ pending: 0, paused: true }))).toBe(true)
+    expect(planQueueCanToggle(summary({ pending: 1 }))).toBe(true)
+    expect(
+      planQueueCanToggle(summary({ pending: 0, runningPlan: '003-x.md' }))
+    ).toBe(true)
   })
 })

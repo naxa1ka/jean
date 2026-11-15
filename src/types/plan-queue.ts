@@ -43,12 +43,16 @@ export interface PlanQueueSummary {
   worktreeId: string
   pending: number
   doneCount: number
+  failedCount: number
   /** pending + running + done + failed. */
   total: number
+  /** First plan in `running/` that the runner owns. */
   runningPlan?: string
   runningSince?: string
   paused: boolean
   blocked: boolean
+  /** A plan in `running/` that the runner does not own; the queue is stuck. */
+  orphaned: boolean
   waitReason?: string
 }
 

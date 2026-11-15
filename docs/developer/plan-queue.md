@@ -36,6 +36,9 @@ default Claude model.
 - The pause marker is `QUEUE_PAUSED`, not `PAUSED`: on a case-insensitive file
   system `PAUSED` and the `paused/` folder are the same name.
 - Only `*.md` files in `.jean/blocked/` count (a `.gitkeep` does not block).
+- Keep `.jean/` out of git: add it to the repo `.gitignore` or to
+  `.git/info/exclude`. The runner moves files in `.jean/plans/` all the time,
+  and plan sessions commit, so a `git add -A` in a plan can commit queue state.
 
 ## Code layout
 
@@ -80,14 +83,15 @@ runner stores a wait reason for the UI.
 
 **Outcome** (`decide_outcome`, in this order):
 
-| Facts                                   | Bucket                                   |
-| --------------------------------------- | ---------------------------------------- |
-| session error (also `chat:cancelled`)   | failed: `session error`                  |
-| blocker marker                          | failed                                   |
-| HEAD not readable                       | failed                                   |
-| HEAD moved since the claim              | done                                     |
-| HEAD same, session never ran, tries < 3 | pending again (re-queued)                |
-| HEAD same, otherwise                    | failed: `no new commit on worktree HEAD` |
+| Facts                                           | Bucket                                   |
+| ----------------------------------------------- | ---------------------------------------- |
+| session error (also `chat:cancelled`)           | failed: `session error`                  |
+| blocker marker                                  | failed                                   |
+| HEAD not readable                               | failed                                   |
+| HEAD moved since the claim                      | done                                     |
+| HEAD same, session never ran, earlier tries < 2 | pending again (re-queued)                |
+| HEAD same, session never ran, 3rd try           | failed: `session never ran (3 tries)`    |
+| HEAD same, otherwise                            | failed: `no new commit on worktree HEAD` |
 
 The main end signal is the return of `send_chat_message`; chat end events and
 the per-tick run-state check catch the rest. Tries are kept in memory and reset
@@ -115,8 +119,8 @@ so native and web access share them. Args are camelCase.
 | `plan_queue_action`        | `worktreeId, action, name?` — `pause`, `resume`, `retry`, `skip`, `unskip`, `remove`, `clear_blocked` |
 
 - Mutating commands resolve the worktree path from Jean's project data (never
-  from the client), validate `name` (plain `*.md` file name, no separators, no
-  `..`), and refuse to touch a plan in `running/`.
+  from the client), validate `name` (plain `*.md` file name: no `/`, `\` or
+  `:`, no `..`, no leading `.`), and refuse to touch a plan in `running/`.
 - Every move or mutation emits `cache:invalidate` with the key `plan-queue`.
   All frontend query keys start with `plan-queue` (`planQueueQueryKeys`), so
   one invalidation refreshes the dialog and the canvas strips.
@@ -132,10 +136,16 @@ so native and web access share them. Args are camelCase.
   (only when the queue is enabled) and passes each row its summary. The strip
   shows on every filter tab for a worktree with `total > 0`; on the Mr. Robot
   tab it comes after the Mr. Robot strip. The text comes from
-  `planQueueStatusText` (blocked → paused → running → waiting → pending →
-  done). A click on the text opens the dialog; the button pauses or resumes.
+  `planQueueStatusText` (blocked → stuck → paused → running → waiting →
+  pending → done). "Stuck" means `orphaned`: a plan in `running/` that the
+  runner does not own. Only owned plans count as `runningPlan`. A
+  `failedCount > 0` adds `· N failed` (a drained queue shows
+  `Queue 5/5 · 2 failed`, not `done`). Blocked, stuck, waiting and failed use
+  the warning color. A click on the text opens the dialog; the button pauses or
+  resumes, and it is hidden for a drained queue that is not paused.
 - **Mobile:** compact rows show the strip as one muted line. Pause/Resume is in
-  the row long-press menu (`WorktreeSectionHeader`, `planQueue` prop).
+  the row long-press menu (`PlanQueueMenuItem`, through the
+  `WorktreeSectionHeader` `planQueue` prop).
 
 ## Migration from jean-queue
 

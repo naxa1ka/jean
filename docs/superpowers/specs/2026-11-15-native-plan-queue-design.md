@@ -63,8 +63,9 @@ plan file format and the folder layout do not change, so the `plan-queue` skill 
 ## Constraints
 
 - Rust core lives in `jean-core/src`. `src-tauri` is a thin shell. Every command goes
-  through the `dispatch.rs` match (`src-tauri/src/lib.rs:427` registers only
-  `dispatch_core_command`), so one dispatch arm serves native and web access.
+  through the `dispatch.rs` match (`src-tauri/src/lib.rs:427` registers
+  `dispatch_core_command` for all core commands, plus a few desktop-only commands),
+  so one dispatch arm serves native and web access.
 - Events to the frontend use `app.emit_all` (`http_server/mod.rs:348`), so web clients
   get them too.
 - Persisted settings use snake_case with `#[serde(default)]`.
@@ -141,7 +142,7 @@ be adopted after a switch, and the other way around.
     the worktree when any of these is true:
     - it has an owned live run
     - the `QUEUE_PAUSED` marker exists
-    - a file exists in `.jean/blocked/`
+    - a `*.md` file exists in `.jean/blocked/`
     - a session that the runner does not own is live in build or yolo mode (the rule
       from `worktreeHasForeignLiveSession`)
   - **Pick a plan.** Take the lowest-sorted pending plan whose gate is met. If none is
@@ -174,8 +175,9 @@ be adopted after a switch, and the other way around.
       - the tries
     - Move the plan to the bucket that `decideOutcome` returns, and write
       `.sid.txt` for a done or failed plan.
-    - `seen_running` is false only when `send_chat_message` returned an error before
-      the run started.
+    - `seen_running` is false when the run ended but the session never went live
+      and recorded no runs. A failed send is already a session error, which
+      `decideOutcome` checks first.
   - **In-flight guard:** a static `Mutex<HashMap<session_id, OwnedRun>>` plus a set of
     worktree ids, in the style of `YOLO_IN_FLIGHT` (`auto_fix/scheduler.rs:88`, a `HashSet`).
   - **Restart recovery:** on startup, for each `running/*.md`, read the session id from
