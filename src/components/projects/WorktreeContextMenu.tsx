@@ -1,6 +1,7 @@
 import {
   Code,
   FolderOpen,
+  ListOrdered,
   Play,
   Terminal,
   Trash2,
@@ -45,6 +46,8 @@ export function WorktreeContextMenu({
     isBase,
     runScripts,
     preferences,
+    planQueueEnabled,
+    handleOpenPlanQueue,
     handleRun,
     handleRunCommand,
     handleOpenInFinder,
@@ -81,6 +84,13 @@ export function WorktreeContextMenu({
               ))}
             </ContextMenuSubContent>
           </ContextMenuSub>
+        )}
+
+        {planQueueEnabled && (
+          <ContextMenuItem onClick={handleOpenPlanQueue}>
+            <ListOrdered className="mr-2 h-4 w-4" />
+            Plan queue…
+          </ContextMenuItem>
         )}
 
         {(canOpenInEditor() ||

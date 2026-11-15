@@ -110,6 +110,11 @@ const UpdatePrDialog = lazyWithPreload(() =>
     default: mod.UpdatePrDialog,
   }))
 )
+const PlanQueueDialog = lazyWithPreload(() =>
+  import('@/components/plan-queue/PlanQueueDialog').then(mod => ({
+    default: mod.PlanQueueDialog,
+  }))
+)
 const ReviewCommentsDialog = lazyWithPreload(() =>
   import('@/components/magic/ReviewCommentsDialog').then(mod => ({
     default: mod.ReviewCommentsDialog,
@@ -317,6 +322,7 @@ export function MainWindow() {
   const newWorktreeModalOpen = useUIStore(state => state.newWorktreeModalOpen)
   const releaseNotesModalOpen = useUIStore(state => state.releaseNotesModalOpen)
   const updatePrModalOpen = useUIStore(state => state.updatePrModalOpen)
+  const planQueueOpen = useUIStore(state => state.planQueueTarget !== null)
   const reviewCommentsModalOpen = useUIStore(
     state => state.reviewCommentsModalOpen
   )
@@ -568,6 +574,7 @@ export function MainWindow() {
   const shouldRenderMcpServersModal = useRetainedMount(mcpServersModalOpen)
   const shouldRenderRemotePickerModal = useRetainedMount(remotePickerOpen)
   const shouldRenderUpdatePrDialog = useRetainedMount(updatePrModalOpen)
+  const shouldRenderPlanQueueDialog = useRetainedMount(planQueueOpen)
   const shouldRenderReviewCommentsDialog = useRetainedMount(
     reviewCommentsModalOpen
   )
@@ -878,6 +885,11 @@ export function MainWindow() {
       {shouldRenderUpdatePrDialog && (
         <Suspense fallback={null}>
           <UpdatePrDialog />
+        </Suspense>
+      )}
+      {shouldRenderPlanQueueDialog && (
+        <Suspense fallback={null}>
+          <PlanQueueDialog />
         </Suspense>
       )}
       {shouldRenderReviewCommentsDialog && (

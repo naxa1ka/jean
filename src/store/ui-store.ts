@@ -125,6 +125,14 @@ export interface MinimizedCliUpdate {
 /** Top-level Jean feature selected in the sidebar tabs */
 export type RailSection = 'workspace' | 'agents'
 
+/** The worktree fields the plan queue dialog needs (title, open session). */
+export interface PlanQueueTarget {
+  id: string
+  path: string
+  project_id: string
+  name: string
+}
+
 interface UIState {
   leftSidebarVisible: boolean
   railSection: RailSection
@@ -178,6 +186,8 @@ interface UIState {
     | null
   releaseNotesModalOpen: boolean
   updatePrModalOpen: boolean
+  /** Worktree whose plan queue dialog is open, or null when it is closed. */
+  planQueueTarget: PlanQueueTarget | null
   reviewCommentsModalOpen: boolean
   workflowRunsModalOpen: boolean
   workflowRunsModalProjectPath: string | null
@@ -320,6 +330,7 @@ interface UIState {
   ) => void
   setReleaseNotesModalOpen: (open: boolean) => void
   setUpdatePrModalOpen: (open: boolean) => void
+  setPlanQueueTarget: (target: PlanQueueTarget | null) => void
   setReviewCommentsModalOpen: (open: boolean) => void
   setWorkflowRunsModalOpen: (
     open: boolean,
@@ -481,6 +492,7 @@ export const useUIStore = create<UIState>()(
       newWorktreeModalDefaultTab: null,
       releaseNotesModalOpen: false,
       updatePrModalOpen: false,
+      planQueueTarget: null,
       reviewCommentsModalOpen: false,
       workflowRunsModalOpen: false,
       workflowRunsModalProjectPath: null,
@@ -957,6 +969,15 @@ export const useUIStore = create<UIState>()(
               : { updatePrModalOpen: open },
           undefined,
           'setUpdatePrModalOpen'
+        ),
+      setPlanQueueTarget: target =>
+        set(
+          state =>
+            state.planQueueTarget?.id === target?.id
+              ? state
+              : { planQueueTarget: target },
+          undefined,
+          'setPlanQueueTarget'
         ),
       setReviewCommentsModalOpen: open =>
         set(
