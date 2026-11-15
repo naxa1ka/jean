@@ -12,6 +12,7 @@ import { projectsQueryKeys } from '@/services/projects'
 import { chatQueryKeys, restoreReturnedQueuedMessage } from '@/services/chat'
 import { MCP_SERVERS_KEY } from '@/services/mcp'
 import { claudeCliQueryKeys } from '@/services/claude-cli'
+import { planQueueQueryKeys } from '@/services/plan-queue'
 import type {
   AllSessionsResponse,
   QueuedMessage,
@@ -308,6 +309,10 @@ export function applyCacheInvalidationKeys(
         break
       case 'secret-request':
         queryClient.invalidateQueries({ queryKey: ['secret-request'] })
+        break
+      case 'plan-queue':
+        // Queue files moved: refreshes usePlanQueue and usePlanQueueSummaries.
+        queryClient.invalidateQueries({ queryKey: planQueueQueryKeys.all })
         break
     }
   }

@@ -31,6 +31,7 @@ import {
 import { useBrowserStore } from '@/store/browser-store'
 import { chatQueryKeys } from '@/services/chat'
 import { projectsQueryKeys } from '@/services/projects'
+import { planQueueQueryKeys } from '@/services/plan-queue'
 import { DEFAULT_KEYBINDINGS } from '@/types/keybindings'
 import type {
   AllSessionsResponse,
@@ -796,6 +797,23 @@ describe('applySessionRenamedToCaches', () => {
 })
 
 describe('applyCacheInvalidationKeys', () => {
+  it('refreshes the plan queue and its summaries on plan-queue changes', () => {
+    const queryClient = new QueryClient()
+    const queueKey = planQueueQueryKeys.worktree('wt-1')
+    const summariesKey = planQueueQueryKeys.summaries('project-1')
+    queryClient.setQueryData(queueKey, {})
+    queryClient.setQueryData(summariesKey, [])
+    queryClient.setQueryData(projectsQueryKeys.list(), [])
+
+    applyCacheInvalidationKeys(queryClient, ['plan-queue'])
+
+    expect(queryClient.getQueryState(queueKey)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(summariesKey)?.isInvalidated).toBe(true)
+    expect(
+      queryClient.getQueryState(projectsQueryKeys.list())?.isInvalidated
+    ).toBe(false)
+  })
+
   it('refreshes the multi-server sidebar project list on project changes', () => {
     const queryClient = new QueryClient()
     const multiServerKey = ['multi-server', 'projects', 'server-1:true']
