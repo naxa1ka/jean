@@ -67,6 +67,7 @@ mod opencode_cli;
 mod opencode_server;
 mod opinionated;
 mod pi_cli;
+pub mod plan_queue;
 mod platform;
 mod prerequisites;
 mod projects;
