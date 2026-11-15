@@ -264,6 +264,13 @@ import {
 import { openCanvasConflictResolution } from './conflict-resolution-navigation'
 import { getCanvasDiffRequest } from './canvas-diff-request'
 import { resolveModalWorktreeSnapshot } from './modal-worktree-snapshot'
+import {
+  PlanQueueMenuItem,
+  PlanQueueProgress,
+} from '@/components/plan-queue/PlanQueueProgress'
+import { planQueueCanToggle } from '@/components/plan-queue/plan-queue-utils'
+import { usePlanQueueSummaries } from '@/services/plan-queue'
+import type { PlanQueueSummary } from '@/types/plan-queue'
 
 interface ProjectCanvasViewProps {
   projectId: string
@@ -550,6 +557,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   onSetLabels,
   onResolveConflicts,
   disableTextSelection = false,
+  planQueue,
 }: {
   worktree: Worktree
   projectId: string
@@ -566,6 +574,8 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   onSetLabels?: (worktree: Worktree) => void
   onResolveConflicts?: (worktree: Worktree) => void
   disableTextSelection?: boolean
+  /** Queue summary; compact rows put Pause/Resume in the long-press menu. */
+  planQueue?: PlanQueueSummary
 }) {
   const { elementRef: rowVisibilityRef, isVisible } = useCanvasRowVisibility()
   const stackedBaseBranch = getStackedBaseBranch(
@@ -1064,7 +1074,10 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   const showDiffDetails =
     compact && !!onDiffClick && (diffAdded > 0 || diffRemoved > 0)
   const showSyncDetails = compact && (behindCount > 0 || unpushedCount > 0)
-  const hasCompactDetails = showPrDetails || showDiffDetails || showSyncDetails
+  const showQueueToggle =
+    compact && !!planQueue && planQueueCanToggle(planQueue)
+  const hasCompactDetails =
+    showPrDetails || showDiffDetails || showSyncDetails || showQueueToggle
 
   if (!onSetLabels && !hasCompactDetails) return row
 
@@ -1108,6 +1121,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
             </span>
           </ContextMenuItem>
         )}
+        {showQueueToggle && <PlanQueueMenuItem summary={planQueue} />}
         {onSetLabels && hasCompactDetails && <ContextMenuSeparator />}
         {onSetLabels && (
           <ContextMenuItem onSelect={handleSetLabels}>
@@ -1606,6 +1620,19 @@ export function ProjectCanvasView({
         })),
     [visibleWorktrees, sessionsByWorktreeId, sessionCardDataCache, storeState]
   )
+
+  const planQueueEnabled = Boolean(project.plan_queue_settings?.enabled)
+  const { data: planQueueSummaries } = usePlanQueueSummaries(
+    projectId,
+    planQueueEnabled && !project.offline
+  )
+  const planQueueByWorktreeId = useMemo(() => {
+    const map = new Map<string, PlanQueueSummary>()
+    if (!planQueueEnabled) return map
+    for (const summary of planQueueSummaries ?? [])
+      if (summary.total > 0) map.set(summary.worktreeId, summary)
+    return map
+  }, [planQueueEnabled, planQueueSummaries])
 
   const canvasReorderEnabled =
     !isMobile && activeFilterTab === 'all' && searchQuery.trim().length === 0
@@ -3919,6 +3946,9 @@ export function ProjectCanvasView({
                       </Fragment>
                     )
                   }
+                  const planQueue = planQueueByWorktreeId.get(
+                    section.worktree.id
+                  )
                   return (
                     <Fragment key={section.worktree.id}>
                       {groupHeader}
@@ -3960,6 +3990,7 @@ export function ProjectCanvasView({
                             }
                             onResolveConflicts={handleCanvasResolveConflicts}
                             disableTextSelection={disableWorktreeTextSelection}
+                            planQueue={planQueue}
                           />
                           {activeFilterTab === 'auto_fix' && (
                             <MrRobotProgress
@@ -3978,6 +4009,13 @@ export function ProjectCanvasView({
                                     )
                                 openWorktreeModal(worktree.id, worktree.path)
                               }}
+                            />
+                          )}
+                          {planQueue && (
+                            <PlanQueueProgress
+                              worktree={section.worktree}
+                              summary={planQueue}
+                              compact={isMobile}
                             />
                           )}
                         </div>

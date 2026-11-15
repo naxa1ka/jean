@@ -1,7 +1,7 @@
 # Native plan queue — design
 
 Date: 2026-11-15
-Status: draft, waiting for approval
+Status: implemented (slices 01-05)
 
 ## Intent
 
@@ -63,8 +63,9 @@ plan file format and the folder layout do not change, so the `plan-queue` skill 
 ## Constraints
 
 - Rust core lives in `jean-core/src`. `src-tauri` is a thin shell. Every command goes
-  through the `dispatch.rs` match (`src-tauri/src/lib.rs:427` registers only
-  `dispatch_core_command`), so one dispatch arm serves native and web access.
+  through the `dispatch.rs` match (`src-tauri/src/lib.rs:427` registers
+  `dispatch_core_command` for all core commands, plus a few desktop-only commands),
+  so one dispatch arm serves native and web access.
 - Events to the frontend use `app.emit_all` (`http_server/mod.rs:348`), so web clients
   get them too.
 - Persisted settings use snake_case with `#[serde(default)]`.
@@ -141,7 +142,7 @@ be adopted after a switch, and the other way around.
     the worktree when any of these is true:
     - it has an owned live run
     - the `QUEUE_PAUSED` marker exists
-    - a file exists in `.jean/blocked/`
+    - a `*.md` file exists in `.jean/blocked/`
     - a session that the runner does not own is live in build or yolo mode (the rule
       from `worktreeHasForeignLiveSession`)
   - **Pick a plan.** Take the lowest-sorted pending plan whose gate is met. If none is
@@ -174,8 +175,9 @@ be adopted after a switch, and the other way around.
       - the tries
     - Move the plan to the bucket that `decideOutcome` returns, and write
       `.sid.txt` for a done or failed plan.
-    - `seen_running` is false only when `send_chat_message` returned an error before
-      the run started.
+    - `seen_running` is false when the run ended but the session never went live
+      and recorded no runs. A failed send is already a session error, which
+      `decideOutcome` checks first.
   - **In-flight guard:** a static `Mutex<HashMap<session_id, OwnedRun>>` plus a set of
     worktree ids, in the style of `YOLO_IN_FLIGHT` (`auto_fix/scheduler.rs:88`, a `HashSet`).
   - **Restart recovery:** on startup, for each `running/*.md`, read the session id from
@@ -310,3 +312,6 @@ be adopted after a switch, and the other way around.
 - slice 04: the blocker button is "Clear blocker", not "Clear & resume": `clear_blocked` only deletes the markers. A paused queue stays paused.
 - slice 04: the add area also has a "Choose .md files" button (file input, read with `File.text()`), because mobile has no file drag-drop.
 - slice 04: the default-model picker lists the Claude `modelOptions` plus "Use Jean default" (`null`). A saved id that is not in the list is still shown.
+- slice 05: the canvas queries summaries and shows the strip only when the project has the queue turned on (same rule as the menu entry). With the switch off, Pause/Resume would have no runner to act on.
+- slice 05: status text priority is blocked → paused → running → waiting → pending → done. Blocked and paused win over a running plan, because they ask the user to act. The `3/5` position is `total - pending`, so failed plans count as handled.
+- slice 05: the design's Docs line also asks for a user guide page. The slice asks only for `docs/developer/plan-queue.md`, so no user guide page was added.

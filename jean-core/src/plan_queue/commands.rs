@@ -99,14 +99,18 @@ pub struct PlanQueueSummary {
     pub worktree_id: String,
     pub pending: usize,
     pub done_count: usize,
+    pub failed_count: usize,
     /// pending + running + done + failed.
     pub total: usize,
+    /// First plan in `running/` that this runner owns.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub running_plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub running_since: Option<String>,
     pub paused: bool,
     pub blocked: bool,
+    /// A plan in `running/` that the runner does not own; the queue is stuck.
+    pub orphaned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait_reason: Option<String>,
 }
@@ -248,33 +252,42 @@ pub fn read_queue(
 }
 
 /// Counts for the progress line. `None` when the worktree has no plans folder.
+/// `owned` is `owned_running_plans()`: only those plans count as running.
 pub fn summarize(
     worktree_id: &str,
     worktree: &Path,
+    owned: &HashMap<PathBuf, String>,
     wait_reason: Option<String>,
 ) -> Option<PlanQueueSummary> {
     let plans = plans_dir(worktree);
     if !plans.is_dir() {
         return None;
     }
+    let running_dir = plans.join("running");
     let pending = list_bucket(&plans).len();
-    let running = list_bucket(&plans.join("running"));
+    let running = list_bucket(&running_dir);
     let done_count = list_bucket(&plans.join("done")).len();
-    let failed = list_bucket(&plans.join("failed")).len();
-    let running_since = running
-        .first()
-        .and_then(|n| read_sid(&plans.join("running").join(n)))
+    let failed_count = list_bucket(&plans.join("failed")).len();
+    let (owned_running, orphans): (Vec<&String>, Vec<&String>) = running
+        .iter()
+        .partition(|n| owned.contains_key(&running_dir.join(n)));
+    let running_plan = owned_running.first().map(|n| (*n).clone());
+    let running_since = running_plan
+        .as_ref()
+        .and_then(|n| read_sid(&running_dir.join(n)))
         .map(|s| s.at)
         .filter(|a| !a.is_empty());
     Some(PlanQueueSummary {
         worktree_id: worktree_id.to_string(),
         pending,
         done_count,
-        total: pending + running.len() + done_count + failed,
-        running_plan: running.first().cloned(),
+        failed_count,
+        total: pending + running.len() + done_count + failed_count,
+        running_plan,
         running_since,
         paused: is_paused(&plans),
         blocked: !list_bucket(&blocked_dir(worktree)).is_empty(),
+        orphaned: !orphans.is_empty(),
         wait_reason,
     })
 }
@@ -444,10 +457,11 @@ pub async fn get_plan_queue_summaries(
         .filter(|w| w.archived_at.is_none())
         .map(|w| (w.id.clone(), PathBuf::from(&w.path)))
         .collect();
+    let owned = owned_running_plans();
     tokio::task::spawn_blocking(move || {
         worktrees
             .iter()
-            .filter_map(|(id, path)| summarize(id, path, wait_reason(id)))
+            .filter_map(|(id, path)| summarize(id, path, &owned, wait_reason(id)))
             .collect()
     })
     .await
@@ -741,23 +755,42 @@ mod tests {
         wt.put("done/000-d.md", "d");
         wt.put("failed/004-e.md", "e");
         wt.put("paused/005-f.md", "f");
-        let s = summarize("w1", wt.path(), None).unwrap();
+        let owned = HashMap::from([(wt.plans().join("running/003-c.md"), "s".to_string())]);
+        let s = summarize("w1", wt.path(), &owned, None).unwrap();
         assert_eq!(
             s,
             PlanQueueSummary {
                 worktree_id: "w1".into(),
                 pending: 2,
                 done_count: 1,
+                failed_count: 1,
                 total: 5,
                 running_plan: Some("003-c.md".into()),
                 running_since: Some("t3".into()),
                 paused: false,
                 blocked: false,
+                orphaned: false,
                 wait_reason: None,
             }
         );
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["failedCount"], 1);
+        assert_eq!(json["orphaned"], false);
         let empty = tempfile::tempdir().unwrap();
-        assert_eq!(summarize("w2", empty.path(), None), None);
+        assert_eq!(summarize("w2", empty.path(), &owned, None), None);
+    }
+
+    #[test]
+    fn summary_reports_an_unowned_running_plan_as_orphaned() {
+        let wt = Wt::new();
+        wt.put("001-a.md", "a");
+        wt.put("running/003-c.md", "c");
+        wt.put("running/003-c.md.sid.txt", "sessionId=s\nat=t3\n");
+        let s = summarize("w1", wt.path(), &HashMap::new(), None).unwrap();
+        assert!(s.orphaned);
+        assert_eq!(s.running_plan, None);
+        assert_eq!(s.running_since, None);
+        assert_eq!(s.total, 2);
     }
 
     #[test]
