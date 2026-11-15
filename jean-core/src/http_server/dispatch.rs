@@ -382,6 +382,9 @@ pub async fn dispatch_command(
                 field_opt(&args, "linkedProjectIds", "linked_project_ids")?;
             let auto_fix_settings: Option<Option<crate::projects::types::ProjectAutoFixSettings>> =
                 field_nullable_option(&args, "autoFixSettings", "auto_fix_settings")?;
+            let plan_queue_settings: Option<
+                Option<crate::projects::types::ProjectPlanQueueSettings>,
+            > = field_nullable_option(&args, "planQueueSettings", "plan_queue_settings")?;
             let result = crate::projects::update_project_settings(
                 app.clone(),
                 project_id,
@@ -401,6 +404,7 @@ pub async fn dispatch_command(
                 sentry_projects,
                 linked_project_ids,
                 auto_fix_settings,
+                plan_queue_settings,
             )
             .await?;
             emit_cache_invalidation(app, &["projects"]);

@@ -10,6 +10,14 @@ export type WorktreeSortMode = 'created' | 'last_activity' | 'manual'
 
 export type WorktreeOrigin = 'manual' | 'auto_fix'
 
+/** Per-project native plan queue settings (`.jean/plans/` runner). */
+export interface ProjectPlanQueueSettings {
+  /** The runner starts plans for this project only when true. Default false. */
+  enabled: boolean
+  /** Model for plans with no `<!-- model: <id> -->` pin. null = Jean's default. */
+  default_model?: string | null
+}
+
 export interface ProjectAutoFixSettings {
   enabled: boolean
   interval_minutes: number
@@ -168,6 +176,8 @@ export interface Project {
   linked_project_ids?: string[]
   /** Per-project automated issue fixing settings */
   auto_fix_settings?: ProjectAutoFixSettings | null
+  /** Per-project native plan queue settings */
+  plan_queue_settings?: ProjectPlanQueueSettings | null
   /** Number of active worktrees, included in the lightweight project list response */
   worktree_count?: number
   /** Whether an active base-branch session exists */

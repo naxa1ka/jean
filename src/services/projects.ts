@@ -2880,6 +2880,7 @@ export function useUpdateProjectSettings() {
       sentryProjectSlug,
       sentryProjects,
       autoFixSettings,
+      planQueueSettings,
     }: {
       projectId: string
       name?: string
@@ -2897,6 +2898,7 @@ export function useUpdateProjectSettings() {
       sentryProjectSlug?: string
       sentryProjects?: Project['sentry_projects']
       autoFixSettings?: Project['auto_fix_settings']
+      planQueueSettings?: Project['plan_queue_settings']
       linkedProjectIds?: string[]
     }): Promise<Project> => {
       if (!isTauri()) {
@@ -2939,6 +2941,7 @@ export function useUpdateProjectSettings() {
           sentryProjectSlug,
           sentryProjects,
           autoFixSettings,
+          planQueueSettings,
           linkedProjectIds: resourceLinkedProjectIds,
         }
       )

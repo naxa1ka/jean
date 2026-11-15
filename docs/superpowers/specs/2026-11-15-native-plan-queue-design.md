@@ -295,3 +295,8 @@ be adopted after a switch, and the other way around.
 
 - slice 01: sibling modules in `jean-core/src/lib.rs` are private `mod`, but nothing uses the core yet → declared `pub mod plan_queue` so `clippy -D warnings` has no dead-code errors before slice 02.
 - slice 01: jean-queue `nextPrefix` gives `000` when the pending names have no numeric prefix (max of `-1`) → ported as is, to keep the same file names as the Node runner.
+- slice 02: extra skip rule: a worktree whose `running/` holds a plan that the runner does not own (an orphan, or another runner's claim) is skipped. Without it the next plan could start while an earlier one is still unresolved.
+- slice 02: recovery runs the first time the runner sees a worktree of an enabled project (one time for each process), not only at app start. So when a user turns the queue on later, the `running/` plans are also recovered.
+- slice 02: end signal: the return of `send_chat_message` is the main signal, because it awaits the whole turn. A chat end event ends a run while the send is still in flight. `chat:cancelled` and an error run state count as a session error. A live run state never ends a run.
+- slice 02: "delete the new session" after a failed claim uses `chat::close_session`, which removes a session with no messages.
+- slice 02: the session name is the plan file name without `.md`. Thinking and effort are `None`, so the normal new-session defaults apply.
