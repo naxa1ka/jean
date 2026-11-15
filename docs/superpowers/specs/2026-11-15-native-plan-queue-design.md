@@ -1,7 +1,7 @@
 # Native plan queue — design
 
 Date: 2026-11-15
-Status: draft, waiting for approval
+Status: implemented (slices 01-05)
 
 ## Intent
 
@@ -310,3 +310,6 @@ be adopted after a switch, and the other way around.
 - slice 04: the blocker button is "Clear blocker", not "Clear & resume": `clear_blocked` only deletes the markers. A paused queue stays paused.
 - slice 04: the add area also has a "Choose .md files" button (file input, read with `File.text()`), because mobile has no file drag-drop.
 - slice 04: the default-model picker lists the Claude `modelOptions` plus "Use Jean default" (`null`). A saved id that is not in the list is still shown.
+- slice 05: the canvas queries summaries and shows the strip only when the project has the queue turned on (same rule as the menu entry). With the switch off, Pause/Resume would have no runner to act on.
+- slice 05: status text priority is blocked → paused → running → waiting → pending → done. Blocked and paused win over a running plan, because they ask the user to act. The `3/5` position is `total - pending`, so failed plans count as handled.
+- slice 05: the design's Docs line also asks for a user guide page. The slice asks only for `docs/developer/plan-queue.md`, so no user guide page was added.

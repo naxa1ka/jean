@@ -57,6 +57,8 @@ import {
   Trash2,
   GripVertical,
   Tag,
+  Pause,
+  Play,
 } from '@/components/icons/reicon'
 import { Button, raisedToolbar } from '@/components/ui/button'
 import {
@@ -264,6 +266,12 @@ import {
 import { openCanvasConflictResolution } from './conflict-resolution-navigation'
 import { getCanvasDiffRequest } from './canvas-diff-request'
 import { resolveModalWorktreeSnapshot } from './modal-worktree-snapshot'
+import {
+  PlanQueueProgress,
+  usePlanQueueToggle,
+} from '@/components/plan-queue/PlanQueueProgress'
+import { usePlanQueueSummaries } from '@/services/plan-queue'
+import type { PlanQueueSummary } from '@/types/plan-queue'
 
 interface ProjectCanvasViewProps {
   projectId: string
@@ -550,6 +558,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   onSetLabels,
   onResolveConflicts,
   disableTextSelection = false,
+  planQueue,
 }: {
   worktree: Worktree
   projectId: string
@@ -566,6 +575,8 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   onSetLabels?: (worktree: Worktree) => void
   onResolveConflicts?: (worktree: Worktree) => void
   disableTextSelection?: boolean
+  /** Queue summary; compact rows put Pause/Resume in the long-press menu. */
+  planQueue?: PlanQueueSummary
 }) {
   const { elementRef: rowVisibilityRef, isVisible } = useCanvasRowVisibility()
   const stackedBaseBranch = getStackedBaseBranch(
@@ -596,6 +607,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
     gitStatus?.uncommitted_removed ?? worktree.cached_uncommitted_removed ?? 0
 
   const pickRemoteOrRun = useRemotePicker(worktree.path)
+  const togglePlanQueue = usePlanQueueToggle()
 
   const runGitSync = useCallback(() => {
     const runSync = async (remote?: string) => {
@@ -1064,7 +1076,9 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   const showDiffDetails =
     compact && !!onDiffClick && (diffAdded > 0 || diffRemoved > 0)
   const showSyncDetails = compact && (behindCount > 0 || unpushedCount > 0)
-  const hasCompactDetails = showPrDetails || showDiffDetails || showSyncDetails
+  const showQueueToggle = compact && !!planQueue
+  const hasCompactDetails =
+    showPrDetails || showDiffDetails || showSyncDetails || showQueueToggle
 
   if (!onSetLabels && !hasCompactDetails) return row
 
@@ -1106,6 +1120,16 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
               {behindCount > 0 && unpushedCount > 0 && ' '}
               {unpushedCount > 0 && `↑${unpushedCount}`}
             </span>
+          </ContextMenuItem>
+        )}
+        {showQueueToggle && (
+          <ContextMenuItem onSelect={() => togglePlanQueue(planQueue)}>
+            {planQueue.paused ? (
+              <Play className="mr-2 h-4 w-4" />
+            ) : (
+              <Pause className="mr-2 h-4 w-4" />
+            )}
+            {planQueue.paused ? 'Resume queue' : 'Pause queue'}
           </ContextMenuItem>
         )}
         {onSetLabels && hasCompactDetails && <ContextMenuSeparator />}
@@ -1606,6 +1630,19 @@ export function ProjectCanvasView({
         })),
     [visibleWorktrees, sessionsByWorktreeId, sessionCardDataCache, storeState]
   )
+
+  const planQueueEnabled = Boolean(project.plan_queue_settings?.enabled)
+  const { data: planQueueSummaries } = usePlanQueueSummaries(
+    projectId,
+    planQueueEnabled && !project.offline
+  )
+  const planQueueByWorktreeId = useMemo(() => {
+    const map = new Map<string, PlanQueueSummary>()
+    if (!planQueueEnabled) return map
+    for (const summary of planQueueSummaries ?? [])
+      if (summary.total > 0) map.set(summary.worktreeId, summary)
+    return map
+  }, [planQueueEnabled, planQueueSummaries])
 
   const canvasReorderEnabled =
     !isMobile && activeFilterTab === 'all' && searchQuery.trim().length === 0
@@ -3960,6 +3997,9 @@ export function ProjectCanvasView({
                             }
                             onResolveConflicts={handleCanvasResolveConflicts}
                             disableTextSelection={disableWorktreeTextSelection}
+                            planQueue={planQueueByWorktreeId.get(
+                              section.worktree.id
+                            )}
                           />
                           {activeFilterTab === 'auto_fix' && (
                             <MrRobotProgress
@@ -3980,6 +4020,18 @@ export function ProjectCanvasView({
                               }}
                             />
                           )}
+                          {(() => {
+                            const summary = planQueueByWorktreeId.get(
+                              section.worktree.id
+                            )
+                            return summary ? (
+                              <PlanQueueProgress
+                                worktree={section.worktree}
+                                summary={summary}
+                                compact={isMobile}
+                              />
+                            ) : null
+                          })()}
                         </div>
                       </SortableCanvasWorktreeSection>
                     </Fragment>

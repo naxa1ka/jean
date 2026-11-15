@@ -1,3 +1,5 @@
+import type { PlanQueueSummary } from '@/types/plan-queue'
+
 /**
  * Moves the plan at `index` by `delta` places. Returns the new order, or null
  * when the move goes past either end (no reorder call needed).
@@ -36,4 +38,26 @@ export function formatElapsed(
 /** Drop events give File objects; only `.md` files are plans. */
 export function isMarkdownFile(file: Pick<File, 'name'>): boolean {
   return file.name.toLowerCase().endsWith('.md')
+}
+
+/**
+ * One-line queue status for the canvas progress strip. Blocked and paused win
+ * over a running plan, because they tell the user to act.
+ */
+export function planQueueStatusText(
+  summary: PlanQueueSummary,
+  now: number
+): string {
+  if (summary.blocked) return 'Queue blocked'
+  if (summary.paused) return 'Queue paused'
+  const position = `${summary.total - summary.pending}/${summary.total}`
+  if (summary.runningPlan) {
+    const name = summary.runningPlan.replace(/\.md$/i, '')
+    const elapsed = formatElapsed(summary.runningSince, now)
+    return `Queue ${position} · running ${name}${elapsed ? ` · ${elapsed}` : ''}`
+  }
+  if (summary.waitReason) return `Queue waiting: ${summary.waitReason}`
+  if (summary.pending > 0)
+    return `Queue ${position} · ${summary.pending} pending`
+  return `Queue ${position} · done`
 }
