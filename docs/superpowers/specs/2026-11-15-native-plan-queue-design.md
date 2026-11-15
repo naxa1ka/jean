@@ -91,7 +91,7 @@ The user picked A.
 <worktree>/.jean/plans/done/          + <plan>.sid.txt (NEW: kept so the UI can link the session)
 <worktree>/.jean/plans/failed/       + <plan>.sid.txt (sessionId, at, reason)
 <worktree>/.jean/plans/paused/       skipped plans, out of the queue
-<worktree>/.jean/plans/PAUSED        NEW: marker file, queue paused (no .md, so jean-queue ignores it)
+<worktree>/.jean/plans/QUEUE_PAUSED  NEW: marker file, queue paused (no .md, so jean-queue ignores it)
 <worktree>/.jean/blocked/*.md        blocker markers written by a plan session (only .md counts, as in jean-queue)
 ```
 
@@ -140,7 +140,7 @@ be adopted after a switch, and the other way around.
   - **Tick every 10 s.** For each worktree of each project with `enabled = true`, skip
     the worktree when any of these is true:
     - it has an owned live run
-    - the `PAUSED` marker exists
+    - the `QUEUE_PAUSED` marker exists
     - a file exists in `.jean/blocked/`
     - a session that the runner does not own is live in build or yolo mode (the rule
       from `worktreeHasForeignLiveSession`)
@@ -300,3 +300,8 @@ be adopted after a switch, and the other way around.
 - slice 02: end signal: the return of `send_chat_message` is the main signal, because it awaits the whole turn. A chat end event ends a run while the send is still in flight. `chat:cancelled` and an error run state count as a session error. A live run state never ends a run.
 - slice 02: "delete the new session" after a failed claim uses `chat::close_session`, which removes a session with no messages.
 - slice 02: the session name is the plan file name without `.md`. Thinking and effort are `None`, so the normal new-session defaults apply.
+- slice 03: the pause marker is `QUEUE_PAUSED`, not `PAUSED`. On a case-insensitive file system (Windows, default macOS) `PAUSED` and the `paused/` folder are the same name: a skipped plan made the queue look paused, and Pause failed when `paused/` existed. The check is `is_file()`.
+- slice 03: queue commands hold the runner lock (`scheduler::lock_queue`), so a command never moves files while a tick picks, claims or finishes a plan.
+- slice 03: `gate` in a pending `Plan` is the reason its gate is not met (absent when met). `startedAt` (running) is absent when `.sid.txt` has no `at`; `reason` (failed) is empty when `.sid.txt` has none.
+- slice 03: retry and unskip give the plan the next `NNN-` prefix and keep the rest of the name. `plan_queue_add` strips a `.md` suffix and an `NNN-` prefix from the name before slugify, and rejects empty text.
+- slice 03: `get_plan_queue_summaries` returns raw worktree ids from the owning server; `usePlanQueueSummaries` scopes them like the project id, so they match canvas worktree ids for remote servers.

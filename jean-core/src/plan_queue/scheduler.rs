@@ -29,7 +29,14 @@ use crate::projects::types::{ProjectPlanQueueSettings, Worktree};
 const TICK_SECONDS: u64 = 10;
 const GIT_HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Marker file in `.jean/plans/`: the queue of this worktree is paused.
-pub const PAUSED_MARKER: &str = "PAUSED";
+/// Not `PAUSED`: on a case-insensitive file system that name is the `paused/`
+/// folder of skipped plans.
+pub const PAUSED_MARKER: &str = "QUEUE_PAUSED";
+
+/// The queue of `plans_dir` is paused (the marker is a file).
+pub fn is_paused(plans_dir: &Path) -> bool {
+    plans_dir.join(PAUSED_MARKER).is_file()
+}
 
 static MODEL_PIN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^<!-- model: (\S+) -->").unwrap());
@@ -41,7 +48,7 @@ static MODEL_PIN: LazyLock<Regex> =
 pub struct WorktreeFacts {
     /// A run that this runner owns is live in the worktree.
     pub owned_live: bool,
-    /// `.jean/plans/PAUSED` exists.
+    /// `.jean/plans/QUEUE_PAUSED` exists.
     pub paused: bool,
     /// `.jean/blocked/` has a `*.md` file.
     pub blocked: bool,
@@ -64,7 +71,7 @@ impl Skip {
     fn reason(self) -> &'static str {
         match self {
             Skip::OwnedRun => "a queue run is live",
-            Skip::Paused => "queue paused (PAUSED marker)",
+            Skip::Paused => "queue paused (QUEUE_PAUSED marker)",
             Skip::Blocked => {
                 "blocker marker in .jean/blocked/; queue stopped until a human clears it"
             }
@@ -275,6 +282,22 @@ pub fn wait_reason(worktree_id: &str) -> Option<String> {
     state().wait.get(worktree_id).cloned()
 }
 
+/// Plan path in `running/` → session id, for every run that this runner owns.
+/// A `running/` plan that is not in this map is an orphan (or another runner's).
+pub fn owned_running_plans() -> HashMap<PathBuf, String> {
+    state()
+        .owned
+        .iter()
+        .map(|(id, run)| (run.plan_path.clone(), id.clone()))
+        .collect()
+}
+
+/// Holds the runner lock, so a queue command does not move files while a tick
+/// picks, claims or finishes a plan.
+pub async fn lock_queue() -> tokio::sync::MutexGuard<'static, ()> {
+    TICK_LOCK.lock().await
+}
+
 // ---------------------------------------------------------------- IO
 
 fn now_iso() -> String {
@@ -295,7 +318,7 @@ fn git_head(worktree: &Path) -> Option<String> {
     }
 }
 
-fn sid_path(plan: &Path) -> PathBuf {
+pub(crate) fn sid_path(plan: &Path) -> PathBuf {
     let mut name = plan.as_os_str().to_owned();
     name.push(".sid.txt");
     PathBuf::from(name)
@@ -510,7 +533,7 @@ fn worktree_facts(app: &AppHandle, worktree: &Worktree, plans_dir: &Path) -> Wor
     let running_dir = plans_dir.join("running");
     let mut facts = WorktreeFacts {
         owned_live,
-        paused: plans_dir.join(PAUSED_MARKER).exists(),
+        paused: is_paused(plans_dir),
         blocked: has_blocker_marker(Path::new(&worktree.path)),
         unowned_running: list_bucket(&running_dir)
             .iter()

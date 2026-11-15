@@ -410,6 +410,39 @@ pub async fn dispatch_command(
             emit_cache_invalidation(app, &["projects"]);
             to_value(result)
         }
+        "get_plan_queue" => {
+            let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;
+            to_value(crate::plan_queue::commands::get_plan_queue(app, worktree_id).await?)
+        }
+        "get_plan_queue_summaries" => {
+            let project_id: String = field(&args, "projectId", "project_id")?;
+            to_value(crate::plan_queue::commands::get_plan_queue_summaries(app, project_id).await?)
+        }
+        "plan_queue_add" => {
+            let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;
+            let name: String = from_field(&args, "name")?;
+            let content: String = from_field(&args, "content")?;
+            let result =
+                crate::plan_queue::commands::plan_queue_add(app, worktree_id, name, content)
+                    .await?;
+            emit_cache_invalidation(app, &["plan-queue"]);
+            to_value(result)
+        }
+        "plan_queue_reorder" => {
+            let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;
+            let names: Vec<String> = from_field(&args, "names")?;
+            crate::plan_queue::commands::plan_queue_reorder(app, worktree_id, names).await?;
+            emit_cache_invalidation(app, &["plan-queue"]);
+            Ok(Value::Null)
+        }
+        "plan_queue_action" => {
+            let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;
+            let action: crate::plan_queue::commands::PlanQueueAction = from_field(&args, "action")?;
+            let name: Option<String> = from_field_opt(&args, "name")?;
+            crate::plan_queue::commands::plan_queue_action(app, worktree_id, action, name).await?;
+            emit_cache_invalidation(app, &["plan-queue"]);
+            Ok(Value::Null)
+        }
         "get_auto_fix_status" => {
             let project_id: String = field(&args, "projectId", "project_id")?;
             let data = crate::projects::storage::load_projects_data(app)?;
