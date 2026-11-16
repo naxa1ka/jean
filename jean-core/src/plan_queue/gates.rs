@@ -107,6 +107,11 @@ pub fn needs_met(needs: &Needs, plans_dir: &Path, worktree_path: &Path) -> GateR
         }
     }
     for f in &needs.files {
+        // A ref that starts with `-` would reach git as an option (for example
+        // `--output=...`). Refuse it before git starts.
+        if f.git_ref.starts_with('-') {
+            return GateResult::wait(format!("bad gate ref: {}", f.git_ref));
+        }
         // Like `path.resolve`: an absolute repo path replaces the worktree path.
         let repo = worktree_path.join(&f.repo);
         let spec = format!("{}:{}", f.git_ref, f.path);
@@ -209,6 +214,20 @@ mod tests {
             GateResult {
                 met: false,
                 reason: "slice 002-ui not in done/".into()
+            }
+        );
+    }
+
+    #[test]
+    fn needs_file_ref_starting_with_dash_is_refused_before_git() {
+        let dir = tempfile::tempdir().unwrap();
+        // The repo does not exist: a git run would give the "git show failed" reason.
+        let needs = parse_needs("<!-- needs-file: ../repo --output=x src/a.rs ok -->");
+        assert_eq!(
+            needs_met(&needs, &dir.path().join("plans"), dir.path()),
+            GateResult {
+                met: false,
+                reason: "bad gate ref: --output=x".into()
             }
         );
     }

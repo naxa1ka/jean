@@ -147,6 +147,37 @@ so native and web access share them. Args are camelCase.
   the row long-press menu (`PlanQueueMenuItem`, through the
   `WorktreeSectionHeader` `planQueue` prop).
 
+## MCP tools
+
+Jean MCP lets an agent read and change the queue. Each tool calls an existing
+queue dispatch command (`run_tool` arm `get_plan_queue` / `plan_queue_add` /
+`plan_queue_action` / `set_plan_queue_enabled`, handler `run_plan_queue_tool`
+in `jean-core/src/jean_mcp_core.rs`). No new Tauri or dispatch command exists.
+
+| Tool                     | Args                                    | Result                                 | Lists                                 |
+| ------------------------ | --------------------------------------- | -------------------------------------- | ------------------------------------- |
+| `get_plan_queue`         | `worktreeId`                            | `{ enabled, defaultModel, queue }`     | `READ_ONLY_SUBAGENT_TOOLS`            |
+| `plan_queue_add`         | `worktreeId`, `name`, `content`         | `{ name }` (`NNN-<slug>.md`)           | `RATE_LIMITED_TOOLS`                  |
+| `plan_queue_action`      | `worktreeId`, `action`, `name?`         | `{ ok: true }`                         | `RATE_LIMITED_TOOLS`                  |
+| `set_plan_queue_enabled` | `projectId`, `enabled`, `defaultModel?` | `{ projectId, enabled, defaultModel }` | `RATE_LIMITED_TOOLS`, `APPROVAL_TOOLS` |
+
+- `action` is one of `pause`, `resume`, `retry`, `skip`, `unskip`, `remove`,
+  `clear_blocked`. Any other value is invalid params (-32602).
+- `defaultModel`: absent keeps the stored model; an empty string or `null`
+  clears it; a string is trimmed and stored.
+- `set_plan_queue_enabled` loads the project's `plan_queue_settings`, changes
+  only `enabled` and `defaultModel`, and saves the whole struct through
+  `update_project_settings`. Folder projects are refused.
+- **Approval rule:** only `set_plan_queue_enabled` is in `APPROVAL_TOOLS`. An
+  agent session needs the user's approval for it. `plan_queue_add` and
+  `plan_queue_action` have no gate: the tool descriptions and the system prompt
+  tell the agent to ask the user first.
+- **Gate ref rule:** a `needs-file` gate whose ref starts with `-` is not met
+  (reason `bad gate ref: <ref>`), and git is not started. Plan content can now
+  come from agents, and git would read a ref such as `--output=...` as an option.
+- **Known exposure:** `needs-file` accepts an absolute `repo` path, so a plan
+  can test whether a file in another local git repo contains a text.
+
 ## Migration from jean-queue
 
 Jean cannot detect the Node runner. Before you turn on the switch:

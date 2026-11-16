@@ -42,11 +42,14 @@ const RATE_LIMITED_TOOLS: &[&str] = &[
     "link_worktree_pr",
     "merge_pull_request",
     "move_session",
+    "plan_queue_action",
+    "plan_queue_add",
     "push_worktree",
     "remove_project",
     "run_review",
     "send_chat_message",
     "set_connector",
+    "set_plan_queue_enabled",
     "set_session_model",
     "set_session_settings",
     "start_run_environment",
@@ -226,6 +229,9 @@ pub fn tool_registry() -> Value {
     if let Some(ship) = tool_registry_ship_loop().as_array() {
         tools.extend(ship.iter().cloned());
     }
+    if let Some(plan_queue) = tool_registry_plan_queue().as_array() {
+        tools.extend(plan_queue.iter().cloned());
+    }
     if let Some(agent_tools) = crate::agents::mcp::tool_definitions().as_array() {
         tools.extend(agent_tools.iter().cloned());
     }
@@ -351,6 +357,15 @@ fn tool_registry_ship_loop() -> Value {
         {"name":"create_pull_request","description":"Create a GitHub PR for the worktree with AI-generated title/body (same path as Jean UI Open PR). Stages and commits uncommitted changes when needed, pushes the branch, and opens the PR against the project default branch. Returns prNumber, prUrl, title, existing. Prefer detect_open_pr first when unsure.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"},"sessionId":{"type":"string","description":"Optional Jean session id for context when generating PR content."},"customPrompt":{"type":"string","description":"Optional override for the PR-content magic prompt."},"model":{"type":"string"},"reasoningEffort":{"type":"string"}},"required":["worktreeId"],"additionalProperties":false}},
         {"name":"merge_pull_request","description":"Merge the open GitHub PR for the worktree's current branch using gh (same path as Jean UI merge). Uses the repo-allowed merge method (prefers squash). Fails if there is no open mergeable PR.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"}},"required":["worktreeId"],"additionalProperties":false}},
         {"name":"run_review","description":"Run Jean's AI code review on the worktree branch (same path as Jean UI Review). Returns summary, findings, and approvalStatus. Does not commit or open a PR.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"},"customPrompt":{"type":"string","description":"Optional override for the review magic prompt."},"model":{"type":"string"},"backend":{"type":"string","description":"Optional magic-prompt backend override (e.g. claude, codex)."},"reasoningEffort":{"type":"string"}},"required":["worktreeId"],"additionalProperties":false}}
+    ])
+}
+
+fn tool_registry_plan_queue() -> Value {
+    json!([
+        {"name":"get_plan_queue","description":"Read the plan queue of a worktree: enabled flag of the project, pending, running, done, failed and skipped plans, pause and blocker state.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"}},"required":["worktreeId"],"additionalProperties":false}},
+        {"name":"plan_queue_add","description":"Add one slice plan (markdown) to the plan queue of a worktree. One slice = one PR with one goal. The slice runs unattended in a new full-access session with no history, so the content must be a cold-start plan (repo paths, files to read, branch and base, exact verification commands, a 'Done when' list, a stop rule). Call once per slice, in run order. Returns the queued file name. Ask the user before you add slices.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"},"name":{"type":"string","description":"Plan name, for example fix-login.md. The queue adds a NNN- prefix."},"content":{"type":"string","description":"Markdown content of the slice plan. Limit 1 MB."}},"required":["worktreeId","name","content"],"additionalProperties":false}},
+        {"name":"plan_queue_action","description":"Change the plan queue of a worktree: pause or resume the queue, retry a failed plan, skip or unskip a pending plan, remove a plan, or clear blocker markers. `name` is the queued file name from `get_plan_queue` or `plan_queue_add` (for example `003-fix-login.md`); it is necessary for retry, skip, unskip and remove. Do not resume a paused queue or clear blocker markers unless the user asked.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"},"action":{"type":"string","enum":["pause","resume","retry","skip","unskip","remove","clear_blocked"]},"name":{"type":"string","description":"Queued file name, for example 003-fix-login.md. Required for retry, skip, unskip and remove."}},"required":["worktreeId","action"],"additionalProperties":false}},
+        {"name":"set_plan_queue_enabled","description":"Turn the plan queue runner on or off for a project. When on, Jean starts each pending plan in an unattended full-access session. Ask the user before you turn it on. Needs user approval.","inputSchema":{"type":"object","properties":{"projectId":{"type":"string"},"enabled":{"type":"boolean"},"defaultModel":{"type":["string","null"],"description":"Model for plans with no model pin. Omit to keep; an empty string or null clears it."}},"required":["projectId","enabled"],"additionalProperties":false}}
     ])
 }
 
@@ -1904,6 +1919,10 @@ async fn run_tool(
                 "note": "The user sees these secrets in a card with Delete buttons. End your turn now.",
             }))
         }
+        // Boxed: one arm for the four plan queue tools keeps `run_tool` small.
+        "get_plan_queue" | "plan_queue_add" | "plan_queue_action" | "set_plan_queue_enabled" => {
+            Box::pin(run_plan_queue_tool(app, name, &args)).await
+        }
         CLAUDE_PERMISSION_PROMPT_TOOL => Ok(claude_permission_prompt(app, source, &args).await),
         // Boxed: keeps this large function's stack frame small.
         agent_tool if crate::agents::mcp::is_agent_tool(agent_tool) => {
@@ -3068,6 +3087,145 @@ fn ensure_mcp_worktree_not_archived(app: &AppHandle, worktree_id: &str) -> Resul
         crate::chat::worktree_archived_at(app, worktree_id),
     )
     .map_err(ToolError::invalid_params)
+}
+
+const PLAN_QUEUE_ACTIONS: &[&str] = &[
+    "pause",
+    "resume",
+    "retry",
+    "skip",
+    "unskip",
+    "remove",
+    "clear_blocked",
+];
+
+/// Plan queue tools. They reuse the queue dispatch commands. `get_plan_queue`
+/// only reads.
+async fn run_plan_queue_tool(
+    app: &AppHandle,
+    name: &str,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    match name {
+        "get_plan_queue" => {
+            let worktree_id = require_str(args, "worktreeId")?;
+            let settings = plan_queue_settings_for_worktree(app, &worktree_id)?;
+            let queue =
+                dispatch_command(app, "get_plan_queue", json!({ "worktreeId": worktree_id }))
+                    .await
+                    .map_err(ToolError::internal)?;
+            Ok(json!({
+                "enabled": settings.enabled,
+                "defaultModel": settings.default_model,
+                "queue": queue,
+            }))
+        }
+        "plan_queue_add" => {
+            let worktree_id = require_str(args, "worktreeId")?;
+            let plan_name = require_nonempty_str(args, "name")?;
+            let content = require_nonempty_str(args, "content")?;
+            ensure_mcp_worktree_not_archived(app, &worktree_id)?;
+            let queued = dispatch_command(
+                app,
+                "plan_queue_add",
+                json!({ "worktreeId": worktree_id, "name": plan_name, "content": content }),
+            )
+            .await
+            .map_err(ToolError::internal)?;
+            Ok(json!({ "name": queued }))
+        }
+        "plan_queue_action" => {
+            let worktree_id = require_str(args, "worktreeId")?;
+            let action = require_str(args, "action")?;
+            if !PLAN_QUEUE_ACTIONS.contains(&action.as_str()) {
+                return Err(ToolError::invalid_params(format!(
+                    "Invalid action: {action}. Supported values: {}",
+                    PLAN_QUEUE_ACTIONS.join(", ")
+                )));
+            }
+            let plan_name = optional_str(args, "name");
+            ensure_mcp_worktree_not_archived(app, &worktree_id)?;
+            dispatch_command(
+                app,
+                "plan_queue_action",
+                json!({ "worktreeId": worktree_id, "action": action, "name": plan_name }),
+            )
+            .await
+            .map_err(ToolError::internal)?;
+            Ok(json!({ "ok": true }))
+        }
+        "set_plan_queue_enabled" => set_plan_queue_enabled(app, args).await,
+        other => Err(ToolError::invalid_params(format!("Unknown tool: {other}"))),
+    }
+}
+
+async fn set_plan_queue_enabled(app: &AppHandle, args: &Value) -> Result<Value, ToolError> {
+    let project_id = require_str(args, "projectId")?;
+    let enabled = args
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| ToolError::invalid_params("'enabled' must be a boolean"))?;
+    let default_model = plan_queue_default_model_arg(args)?;
+
+    let data = crate::projects::storage::load_projects_data(app)
+        .map_err(|e| ToolError::internal(format!("load_projects_data: {e}")))?;
+    let project = data
+        .find_project(&project_id)
+        .ok_or_else(|| ToolError::invalid_params(format!("Unknown projectId: {project_id}")))?;
+    if project.is_folder {
+        return Err(ToolError::invalid_params("folders have no plan queue"));
+    }
+    // Change only the fields this tool owns; other fields of the struct stay.
+    let mut settings = project.plan_queue_settings.clone().unwrap_or_default();
+    settings.enabled = enabled;
+    if let Some(model) = default_model {
+        settings.default_model = model;
+    }
+    let settings_json = serde_json::to_value(&settings)
+        .map_err(|e| ToolError::internal(format!("serialize plan queue settings: {e}")))?;
+    dispatch_command(
+        app,
+        "update_project_settings",
+        json!({ "projectId": project_id.clone(), "planQueueSettings": settings_json }),
+    )
+    .await
+    .map_err(ToolError::internal)?;
+    Ok(json!({
+        "projectId": project_id,
+        "enabled": settings.enabled,
+        "defaultModel": settings.default_model,
+    }))
+}
+
+/// `defaultModel` argument: absent = `None` (keep), null or blank = clear,
+/// string = set.
+fn plan_queue_default_model_arg(args: &Value) -> Result<Option<Option<String>>, ToolError> {
+    match args.get("defaultModel") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(model)) => {
+            let trimmed = model.trim();
+            Ok(Some((!trimmed.is_empty()).then(|| trimmed.to_string())))
+        }
+        Some(_) => Err(ToolError::invalid_params(
+            "'defaultModel' must be a string or null",
+        )),
+    }
+}
+
+fn plan_queue_settings_for_worktree(
+    app: &AppHandle,
+    worktree_id: &str,
+) -> Result<crate::projects::types::ProjectPlanQueueSettings, ToolError> {
+    let data = crate::projects::storage::load_projects_data(app)
+        .map_err(|e| ToolError::internal(format!("load_projects_data: {e}")))?;
+    let worktree = data
+        .find_worktree(worktree_id)
+        .ok_or_else(|| ToolError::invalid_params(format!("Unknown worktreeId: {worktree_id}")))?;
+    let project = data.find_project(&worktree.project_id).ok_or_else(|| {
+        ToolError::internal(format!("Worktree {worktree_id} has no parent project"))
+    })?;
+    Ok(project.plan_queue_settings.clone().unwrap_or_default())
 }
 
 fn is_mcp_base_worktree(app: &AppHandle, worktree_id: &str) -> Result<bool, ToolError> {
@@ -4521,6 +4679,172 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"F
             "antigravity"
         );
         assert!(normalize_backend_name("openai").is_err());
+    }
+
+    fn plan_queue_app() -> (tempfile::TempDir, AppHandle) {
+        let temp = tempfile::tempdir().unwrap();
+        let app = AppHandle::new(temp.path().to_path_buf(), temp.path().to_path_buf()).unwrap();
+        let path = temp.path().to_string_lossy().to_string();
+        let data: crate::projects::types::ProjectsData = serde_json::from_value(json!({
+            "projects": [{"id": "project", "name": "App", "path": path, "default_branch": "main",
+                          "added_at": 1,
+                          "plan_queue_settings": {"enabled": false, "default_model": "claude-x"}}],
+            "worktrees": [{"id": "wt", "project_id": "project", "name": "wt", "path": path,
+                           "branch": "feat/x", "created_at": 1, "session_type": "base"}]
+        }))
+        .unwrap();
+        crate::projects::storage::save_projects_data(&app, &data).unwrap();
+        (temp, app)
+    }
+
+    #[test]
+    fn tool_registry_includes_plan_queue_tools() {
+        let tools = tool_registry();
+        let required = |name: &str| find_tool(&tools, name)["inputSchema"]["required"].clone();
+        assert_eq!(required("get_plan_queue"), json!(["worktreeId"]));
+        assert_eq!(
+            required("plan_queue_add"),
+            json!(["worktreeId", "name", "content"])
+        );
+        assert_eq!(
+            required("plan_queue_action"),
+            json!(["worktreeId", "action"])
+        );
+        assert_eq!(
+            required("set_plan_queue_enabled"),
+            json!(["projectId", "enabled"])
+        );
+        let actions =
+            &find_tool(&tools, "plan_queue_action")["inputSchema"]["properties"]["action"]["enum"];
+        assert_eq!(actions.as_array().unwrap().len(), 7);
+
+        for limited in [
+            "plan_queue_add",
+            "plan_queue_action",
+            "set_plan_queue_enabled",
+        ] {
+            assert!(RATE_LIMITED_TOOLS.contains(&limited), "{limited}");
+        }
+        assert!(!RATE_LIMITED_TOOLS.contains(&"get_plan_queue"));
+        assert!(crate::agents::mcp::APPROVAL_TOOLS.contains(&"set_plan_queue_enabled"));
+    }
+
+    #[tokio::test]
+    async fn plan_queue_tools_round_trip_through_run_tool() {
+        let (_temp, app) = plan_queue_app();
+        let added = run_tool(
+            &app,
+            "plan_queue_add",
+            json!({"worktreeId": "wt", "name": "fix-login.md", "content": "# Fix login\n"}),
+            "test",
+        )
+        .await
+        .unwrap();
+        let file = added["name"].as_str().unwrap().to_string();
+        assert!(file.ends_with("fix-login.md"), "{file}");
+
+        let read = run_tool(&app, "get_plan_queue", json!({"worktreeId": "wt"}), "test")
+            .await
+            .unwrap();
+        assert_eq!(read["enabled"], false);
+        assert_eq!(read["defaultModel"], "claude-x");
+        assert_eq!(read["queue"]["pending"][0]["name"], file);
+
+        run_tool(
+            &app,
+            "plan_queue_action",
+            json!({"worktreeId": "wt", "action": "pause"}),
+            "test",
+        )
+        .await
+        .unwrap();
+        let paused = run_tool(&app, "get_plan_queue", json!({"worktreeId": "wt"}), "test")
+            .await
+            .unwrap();
+        assert_eq!(paused["queue"]["paused"], true);
+
+        run_tool(
+            &app,
+            "plan_queue_action",
+            json!({"worktreeId": "wt", "action": "remove", "name": file}),
+            "test",
+        )
+        .await
+        .unwrap();
+        let empty = run_tool(&app, "get_plan_queue", json!({"worktreeId": "wt"}), "test")
+            .await
+            .unwrap();
+        assert!(empty["queue"]["pending"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn plan_queue_action_rejects_unknown_action() {
+        let (_temp, app) = plan_queue_app();
+        let err = run_tool(
+            &app,
+            "plan_queue_action",
+            json!({"worktreeId": "wt", "action": "explode"}),
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn set_plan_queue_enabled_keeps_clears_and_validates_model() {
+        let (_temp, app) = plan_queue_app();
+        let set = |args: Value| {
+            let app = app.clone();
+            async move {
+                run_tool(&app, "set_plan_queue_enabled", args, "test")
+                    .await
+                    .map(|_| ())
+            }
+        };
+        let model = |app: AppHandle| async move {
+            run_tool(&app, "get_plan_queue", json!({"worktreeId": "wt"}), "test")
+                .await
+                .unwrap()["defaultModel"]
+                .clone()
+        };
+
+        set(json!({"projectId": "project", "enabled": true}))
+            .await
+            .unwrap();
+        assert_eq!(model(app.clone()).await, "claude-x");
+        let read = run_tool(&app, "get_plan_queue", json!({"worktreeId": "wt"}), "test")
+            .await
+            .unwrap();
+        assert_eq!(read["enabled"], true);
+
+        set(json!({"projectId": "project", "enabled": true, "defaultModel": "  claude-y "}))
+            .await
+            .unwrap();
+        assert_eq!(model(app.clone()).await, "claude-y");
+
+        set(json!({"projectId": "project", "enabled": true, "defaultModel": ""}))
+            .await
+            .unwrap();
+        assert!(model(app.clone()).await.is_null());
+
+        set(json!({"projectId": "project", "enabled": true, "defaultModel": "claude-x"}))
+            .await
+            .unwrap();
+        set(json!({"projectId": "project", "enabled": true, "defaultModel": null}))
+            .await
+            .unwrap();
+        assert!(model(app.clone()).await.is_null());
+
+        for bad in [
+            json!({"projectId": "project", "enabled": "yes"}),
+            json!({"projectId": "project", "enabled": true, "defaultModel": 5}),
+        ] {
+            assert_eq!(set(bad).await.unwrap_err().code, -32602);
+        }
+        assert!(set(json!({"projectId": "missing", "enabled": true}))
+            .await
+            .is_err());
     }
 
     #[test]

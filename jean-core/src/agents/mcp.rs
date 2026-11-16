@@ -15,6 +15,7 @@ pub const APPROVAL_TOOLS: &[&str] = &[
     "create_pull_request",
     "remove_project",
     "set_connector",
+    "set_plan_queue_enabled",
 ];
 
 const AGENT_TOOLS: &[&str] = &[
@@ -56,6 +57,7 @@ const READ_ONLY_SUBAGENT_TOOLS: &[&str] = &[
     "list_worktrees",
     "get_worktree",
     "get_project_context",
+    "get_plan_queue",
     "list_github_issues",
     "list_github_prs",
     "list_security_issues",
@@ -951,6 +953,8 @@ mod tests {
             read_only_subagent_block(Some("read_only"), "Diff", "spawn_subagent").unwrap();
         assert!(blocked.contains("spawn_subagent"));
         assert!(blocked.contains("Diff"));
+        assert!(read_only_subagent_block(Some("read_only"), "Diff", "get_plan_queue").is_none());
+        assert!(read_only_subagent_block(Some("read_only"), "Diff", "plan_queue_add").is_some());
         assert!(read_only_subagent_block(Some("read_only"), "Diff", "delete_worktree").is_some());
         assert!(read_only_subagent_block(None, "Diff", "delete_worktree").is_none());
         assert!(read_only_subagent_block(None, "Diff", "spawn_subagent").is_none());
