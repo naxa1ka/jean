@@ -365,7 +365,7 @@ fn tool_registry_plan_queue() -> Value {
         {"name":"get_plan_queue","description":"Read the plan queue of a worktree: enabled flag of the project, pending, running, done, failed and skipped plans, pause and blocker state.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"}},"required":["worktreeId"],"additionalProperties":false}},
         {"name":"plan_queue_add","description":"Add one slice plan (markdown) to the plan queue of a worktree. One slice = one PR with one goal. The slice runs unattended in a new full-access session with no history, so the content must be a cold-start plan (repo paths, files to read, branch and base, exact verification commands, a 'Done when' list, a stop rule). Call once per slice, in run order. Returns the queued file name. Ask the user before you add slices.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"},"name":{"type":"string","description":"Plan name, for example fix-login.md. The queue adds a NNN- prefix."},"content":{"type":"string","description":"Markdown content of the slice plan. Limit 1 MB."}},"required":["worktreeId","name","content"],"additionalProperties":false}},
         {"name":"plan_queue_action","description":"Change the plan queue of a worktree: pause or resume the queue, retry a failed plan, skip or unskip a pending plan, remove a plan, or clear blocker markers. `name` is the queued file name from `get_plan_queue` or `plan_queue_add` (for example `003-fix-login.md`); it is necessary for retry, skip, unskip and remove. Do not resume a paused queue or clear blocker markers unless the user asked.","inputSchema":{"type":"object","properties":{"worktreeId":{"type":"string"},"action":{"type":"string","enum":["pause","resume","retry","skip","unskip","remove","clear_blocked"]},"name":{"type":"string","description":"Queued file name, for example 003-fix-login.md. Required for retry, skip, unskip and remove."}},"required":["worktreeId","action"],"additionalProperties":false}},
-        {"name":"set_plan_queue_enabled","description":"Turn the plan queue runner on or off for a project. When on, Jean starts each pending plan in an unattended full-access session. Ask the user before you turn it on. Needs user approval.","inputSchema":{"type":"object","properties":{"projectId":{"type":"string"},"enabled":{"type":"boolean"},"defaultModel":{"type":["string","null"],"description":"Model for plans with no model pin. Omit to keep; an empty string or null clears it."}},"required":["projectId","enabled"],"additionalProperties":false}}
+        {"name":"set_plan_queue_enabled","description":"Turn the plan queue runner on or off for a project. When on, Jean starts each pending plan in an unattended full-access session. Ask the user before you turn it on. Optional fixFindings makes a separate session triage the findings of each plan and apply one fix round. Needs user approval.","inputSchema":{"type":"object","properties":{"projectId":{"type":"string"},"enabled":{"type":"boolean"},"fixFindings":{"type":"boolean","description":"Review and fix reported findings after each plan. Omit to keep."},"defaultModel":{"type":["string","null"],"description":"Model for plans with no model pin. Omit to keep; an empty string or null clears it."}},"required":["projectId","enabled"],"additionalProperties":false}}
     ])
 }
 
@@ -3117,6 +3117,7 @@ async fn run_plan_queue_tool(
             Ok(json!({
                 "enabled": settings.enabled,
                 "defaultModel": settings.default_model,
+                "fixFindings": settings.fix_findings,
                 "queue": queue,
             }))
         }
@@ -3166,6 +3167,11 @@ async fn set_plan_queue_enabled(app: &AppHandle, args: &Value) -> Result<Value, 
         .and_then(Value::as_bool)
         .ok_or_else(|| ToolError::invalid_params("'enabled' must be a boolean"))?;
     let default_model = plan_queue_default_model_arg(args)?;
+    let fix_findings = match args.get("fixFindings") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return Err(ToolError::invalid_params("'fixFindings' must be a boolean")),
+    };
 
     let data = crate::projects::storage::load_projects_data(app)
         .map_err(|e| ToolError::internal(format!("load_projects_data: {e}")))?;
@@ -3181,6 +3187,9 @@ async fn set_plan_queue_enabled(app: &AppHandle, args: &Value) -> Result<Value, 
     if let Some(model) = default_model {
         settings.default_model = model;
     }
+    if let Some(fix_findings) = fix_findings {
+        settings.fix_findings = fix_findings;
+    }
     let settings_json = serde_json::to_value(&settings)
         .map_err(|e| ToolError::internal(format!("serialize plan queue settings: {e}")))?;
     dispatch_command(
@@ -3194,6 +3203,7 @@ async fn set_plan_queue_enabled(app: &AppHandle, args: &Value) -> Result<Value, 
         "projectId": project_id,
         "enabled": settings.enabled,
         "defaultModel": settings.default_model,
+        "fixFindings": settings.fix_findings,
     }))
 }
 
@@ -4845,6 +4855,47 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"F
         assert!(set(json!({"projectId": "missing", "enabled": true}))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn set_plan_queue_enabled_keeps_and_sets_fix_findings() {
+        let (_temp, app) = plan_queue_app();
+        let fix = |app: AppHandle| async move {
+            run_tool(&app, "get_plan_queue", json!({"worktreeId": "wt"}), "test")
+                .await
+                .unwrap()["fixFindings"]
+                .clone()
+        };
+        assert_eq!(fix(app.clone()).await, false);
+        run_tool(
+            &app,
+            "set_plan_queue_enabled",
+            json!({"projectId": "project", "enabled": true, "fixFindings": true}),
+            "test",
+        )
+        .await
+        .unwrap();
+        assert_eq!(fix(app.clone()).await, true);
+        // Absent keeps the stored value.
+        let result = run_tool(
+            &app,
+            "set_plan_queue_enabled",
+            json!({"projectId": "project", "enabled": true}),
+            "test",
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["fixFindings"], true);
+        assert_eq!(fix(app.clone()).await, true);
+        let bad = run_tool(
+            &app,
+            "set_plan_queue_enabled",
+            json!({"projectId": "project", "enabled": true, "fixFindings": "yes"}),
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(bad.code, -32602);
     }
 
     #[test]

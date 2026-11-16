@@ -11,7 +11,9 @@
 //! gathers facts and applies the decisions.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
@@ -19,6 +21,10 @@ use regex::Regex;
 use tauri::AppHandle;
 
 use super::files::{claim_atomic, has_blocker_marker, list_bucket, move_into, SidFile};
+use super::findings::{
+    after_phase, findings_path, fix_plan_path, plan_stem, recovery_target, report_instruction,
+    triage_outcome, triage_prompt, Next, Phase,
+};
 use super::gates::{needs_met, parse_needs, GateResult};
 use super::outcome::{decide_outcome, Bucket, RunEnd, RunFacts};
 use crate::chat::types::RunStateStatus;
@@ -252,6 +258,19 @@ struct OwnedRun {
     seen_running: bool,
     send: SendState,
     event_end: Option<RunEnd>,
+    /// Findings review phase of this run. `start_head` is the HEAD at the start of
+    /// this phase for `Plan` and `Fix`; a `Triage` run keeps the plan's start head.
+    phase: Phase,
+    /// Session id of the plan phase (the `sessionId` of `.sid.txt`).
+    plan_sid: String,
+    /// Claim time; reused on each `.sid.txt` rewrite.
+    at: String,
+    /// The plan text as on disk (without the findings instruction).
+    plan_text: String,
+    /// The resolved model, reused by every phase.
+    model: Option<String>,
+    /// `fix_findings` at plan start (or at recovery).
+    fix_findings: bool,
 }
 
 #[derive(Default)]
@@ -402,12 +421,22 @@ fn move_plan(
     };
     match move_into(&run.plan_path, &run.plans_dir.join(folder)) {
         Ok(dest) => {
+            // After a later phase `sessionId` stays the plan session, and
+            // `phase` / `phaseSid` name the session of the last phase.
+            let later = run.phase != Phase::Plan;
             let sid = SidFile {
-                session_id: session_id.to_string(),
+                session_id: if later {
+                    run.plan_sid.clone()
+                } else {
+                    session_id.to_string()
+                },
                 at: now_iso(),
                 worktree: Some(run.worktree_path.to_string_lossy().into_owned()),
                 head: git_head(&run.worktree_path),
                 reason: Some(reason.to_string()).filter(|r| !r.is_empty()),
+                phase: later.then(|| run.phase.as_str().to_string()),
+                phase_sid: later.then(|| session_id.to_string()),
+                phase_head: None,
             };
             if let Err(e) = std::fs::write(sid_path(&dest), sid.to_string()) {
                 log::warn!("plan queue: write {name}.sid.txt failed: {e}");
@@ -424,90 +453,250 @@ fn move_plan(
     emit_changed(app);
 }
 
-/// Decides the outcome of an ended run and moves its plan. `reclaim` = startup
-/// recovery of a run that ended while the runner was away (`seen_running` unknown).
-fn finish_run(app: &AppHandle, session_id: &str, run: &OwnedRun, end: RunEnd, reclaim: bool) {
-    let tries_key = run.plans_dir.join(file_name(&run.plan_path));
-    let tries = state().tries.get(&tries_key).copied().unwrap_or(0);
+/// Outcome of the phase that just ended. `reclaim` = startup recovery of a run
+/// that ended while the runner was away (`seen_running` unknown).
+fn phase_outcome(run: &OwnedRun, end: RunEnd, reclaim: bool) -> (Bucket, String) {
     let seen_running = (!reclaim).then_some(run.seen_running);
-    let facts = RunFacts {
+    let blocked = has_blocker_marker(&run.worktree_path);
+    if run.phase == Phase::Triage {
+        return triage_outcome(end, blocked, seen_running);
+    }
+    let tries = if run.phase == Phase::Plan {
+        let tries_key = run.plans_dir.join(file_name(&run.plan_path));
+        state().tries.get(&tries_key).copied().unwrap_or(0)
+    } else {
+        0
+    };
+    decide_outcome(&RunFacts {
         status: end,
-        blocked: has_blocker_marker(&run.worktree_path),
+        blocked,
         head: git_head(&run.worktree_path),
         start_head: run.start_head.clone(),
         seen_running,
         tries,
-    };
-    let (bucket, reason) = decide_outcome(&facts);
+    })
+}
+
+/// Applies the end of a run: moves the plan, or starts the next findings phase.
+/// The ended run stays in `owned` until its outcome is applied, so the UI never
+/// shows the plan as stuck. A reclaimed run never starts a phase.
+async fn advance_run(app: &AppHandle, session_id: &str, run: OwnedRun, end: RunEnd, reclaim: bool) {
+    let outcome = phase_outcome(&run, end, reclaim);
+    let name = file_name(&run.plan_path);
+    let next = after_phase(
+        run.phase,
+        outcome,
+        run.fix_findings,
+        findings_path(&run.worktree_path, &name).is_file(),
+        fix_plan_path(&run.worktree_path, &name).is_file(),
+    );
+    match next {
+        Next::Start(phase) if !reclaim => start_phase(app, session_id, run, phase).await,
+        // A reclaimed run ended while Jean was closed: finish it, start nothing.
+        Next::Start(_) => finish_plan(app, session_id, &run, Bucket::Done, "", true),
+        Next::Finish(bucket, reason) => {
+            finish_plan(app, session_id, &run, bucket, &reason, reclaim)
+        }
+    }
+}
+
+fn finish_plan(
+    app: &AppHandle,
+    session_id: &str,
+    run: &OwnedRun,
+    bucket: Bucket,
+    reason: &str,
+    reclaim: bool,
+) {
     let verb = match bucket {
         _ if reclaim => "RECLAIM",
         Bucket::Pending => "REQUEUE",
         Bucket::Done => "DONE",
         Bucket::Failed => "FAILED",
     };
-    move_plan(app, run, session_id, bucket, &reason, verb);
+    state().owned.remove(session_id);
+    move_plan(app, run, session_id, bucket, reason, verb);
+}
+
+/// Starts the triage or fix session of a plan that stays in `running/`.
+async fn start_phase(app: &AppHandle, old_sid: &str, run: OwnedRun, phase: Phase) {
+    let name = file_name(&run.plan_path);
+    let prefix = phase.reason_prefix();
+    let fix_file = fix_plan_path(&run.worktree_path, &name);
+    let message = match phase {
+        Phase::Fix => match std::fs::read_to_string(&fix_file) {
+            Ok(text) if !text.trim().is_empty() => text,
+            _ => {
+                let reason = format!("{prefix}fix plan file is empty");
+                finish_plan(app, old_sid, &run, Bucket::Failed, &reason, false);
+                return;
+            }
+        },
+        _ => {
+            // A fix plan left by an earlier try must not start a fix run.
+            let _ = std::fs::remove_file(&fix_file);
+            triage_prompt(&run.plan_text, &name, run.start_head.as_deref())
+        }
+    };
+
+    let session_name = format!("{}-{}", plan_stem(&name), phase.as_str());
+    let worktree_path = run.worktree_path.to_string_lossy().into_owned();
+    let session = match crate::chat::create_session(
+        app.clone(),
+        run.worktree_id.clone(),
+        worktree_path.clone(),
+        Some(session_name.clone()),
+        Some("claude".to_string()),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            let reason = format!("{prefix}create_session: {e}");
+            finish_plan(app, old_sid, &run, Bucket::Failed, &reason, false);
+            return;
+        }
+    };
+    let new_sid = session.id;
+    // Keep the name stable: automatic session naming must not replace it.
+    if let Err(e) = crate::chat::rename_session(
+        app.clone(),
+        run.worktree_id.clone(),
+        worktree_path.clone(),
+        new_sid.clone(),
+        session_name,
+    )
+    .await
+    {
+        log::warn!("plan queue: rename session {new_sid} failed: {e}");
+    }
+
+    let head_now = git_head(&run.worktree_path);
+    let mut new_run = OwnedRun {
+        phase,
+        seen_running: false,
+        send: SendState::InFlight,
+        event_end: None,
+        ..run.clone()
+    };
+    if phase == Phase::Fix {
+        new_run.start_head = head_now.clone();
+    }
+    let sid = SidFile {
+        session_id: run.plan_sid.clone(),
+        at: run.at.clone(),
+        worktree: Some(worktree_path),
+        head: run.start_head.clone(),
+        reason: None,
+        phase: Some(phase.as_str().to_string()),
+        phase_sid: Some(new_sid.clone()),
+        phase_head: head_now.filter(|_| phase == Phase::Fix),
+    };
+    if let Err(e) = std::fs::write(sid_path(&run.plan_path), sid.to_string()) {
+        log::warn!("plan queue: write {name}.sid.txt failed: {e}");
+    }
+    {
+        let mut st = state();
+        st.owned.remove(old_sid);
+        st.owned.insert(new_sid.clone(), new_run.clone());
+    }
+    log::info!(
+        "plan queue: PHASE {name} -> {} (session {new_sid})",
+        phase.as_str()
+    );
+    emit_changed(app);
+    launch_phase(app, new_run, new_sid, message).await;
 }
 
 /// Finishes every owned run that has ended. Caller holds [`TICK_LOCK`].
-fn poll_owned(app: &AppHandle) {
-    let ids: Vec<String> = state().owned.keys().cloned().collect();
-    for id in ids {
-        let run_state = session_run_state(app, &id);
-        let finished = {
-            let mut st = state();
-            let Some(run) = st.owned.get_mut(&id) else {
-                continue;
+/// Boxed: the send task spawned by `launch_phase` calls this again, which would
+/// make the opaque future type recursive.
+fn poll_owned(app: &AppHandle) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+    Box::pin(async move {
+        let ids: Vec<String> = state().owned.keys().cloned().collect();
+        for id in ids {
+            let run_state = session_run_state(app, &id);
+            let finished = {
+                let mut st = state();
+                let Some(run) = st.owned.get_mut(&id) else {
+                    continue;
+                };
+                if let Some((status, has_runs)) = run_state {
+                    run.seen_running |= status.is_live() || has_runs;
+                }
+                owned_run_end(run.send, run.event_end, run_state.map(|(s, _)| s))
+                    .map(|end| (run.clone(), end))
             };
-            if let Some((status, has_runs)) = run_state {
-                run.seen_running |= status.is_live() || has_runs;
+            if let Some((run, end)) = finished {
+                advance_run(app, &id, run, end, false).await;
             }
-            match owned_run_end(run.send, run.event_end, run_state.map(|(s, _)| s)) {
-                Some(end) => st.owned.remove(&id).map(|run| (run, end)),
-                None => None,
-            }
-        };
-        if let Some((run, end)) = finished {
-            finish_run(app, &id, &run, end, false);
         }
-    }
+    })
 }
 
 /// Adopts, reclaims or leaves the plans in `running/` that this runner does not own.
-fn recover_worktree(app: &AppHandle, worktree: &Worktree) {
+/// The session to check is the one of the current phase (`recovery_target`).
+async fn recover_worktree(
+    app: &AppHandle,
+    settings: &ProjectPlanQueueSettings,
+    worktree: &Worktree,
+) {
     let worktree_path = PathBuf::from(&worktree.path);
     let plans_dir = worktree_path.join(".jean").join("plans");
     let running_dir = plans_dir.join("running");
     for name in list_bucket(&running_dir) {
         let plan_path = running_dir.join(&name);
-        if state().owned.values().any(|r| r.plan_path == plan_path) {
+        let already_owned = state().owned.values().any(|r| r.plan_path == plan_path);
+        if already_owned {
             continue;
         }
         let sid = std::fs::read_to_string(sid_path(&plan_path))
             .ok()
             .and_then(|text| SidFile::parse(&text).ok());
-        let session_id = sid.as_ref().map(|s| s.session_id.clone());
-        let status = session_id
-            .as_deref()
-            .and_then(|id| session_run_state(app, id))
+        let (id, phase) = match &sid {
+            Some(sid) => recovery_target(sid),
+            None => (String::new(), Phase::Plan),
+        };
+        let status = (!id.is_empty())
+            .then(|| session_run_state(app, &id))
+            .flatten()
             .map(|(status, _)| status);
+        let plan_text = std::fs::read_to_string(&plan_path).unwrap_or_default();
+        let start_head = sid.as_ref().and_then(|s| match phase {
+            Phase::Fix => s.phase_head.clone(),
+            _ => s.head.clone(),
+        });
         let run = OwnedRun {
             worktree_id: worktree.id.clone(),
             worktree_path: worktree_path.clone(),
             plans_dir: plans_dir.clone(),
             plan_path,
-            start_head: sid.as_ref().and_then(|s| s.head.clone()),
+            start_head,
             seen_running: true,
             send: SendState::Adopted,
             event_end: None,
+            phase,
+            plan_sid: sid
+                .as_ref()
+                .map(|s| s.session_id.clone())
+                .unwrap_or_default(),
+            at: sid.as_ref().map(|s| s.at.clone()).unwrap_or_default(),
+            model: resolve_model(&plan_text, settings.default_model.as_deref()),
+            plan_text,
+            fix_findings: settings.fix_findings,
         };
-        let id = session_id.unwrap_or_default();
         match recovery_action(Some(id.as_str()), status) {
             Recovery::Adopt => {
                 log::info!("plan queue: ADOPT {name} (session {id}) still running");
                 state().owned.insert(id, run);
                 emit_changed(app);
             }
-            Recovery::Reclaim(end) => finish_run(app, &id, &run, end, true),
+            Recovery::Reclaim(end) => advance_run(app, &id, run, end, true).await,
             Recovery::Orphan => {
                 let id = if id.is_empty() { "no-sid" } else { id.as_str() };
                 log::info!(
@@ -639,7 +828,7 @@ async fn start_plan(
         app.clone(),
         worktree.id.clone(),
         worktree.path.clone(),
-        Some(name.trim_end_matches(".md").to_string()),
+        Some(plan_stem(name).to_string()),
         Some("claude".to_string()),
         None,
         None,
@@ -679,12 +868,13 @@ async fn start_plan(
         return;
     };
 
+    let at = now_iso();
     let sid = SidFile {
         session_id: session_id.clone(),
-        at: now_iso(),
+        at: at.clone(),
         worktree: Some(worktree.path.clone()),
         head: start_head.clone(),
-        reason: None,
+        ..SidFile::default()
     };
     if let Err(e) = std::fs::write(sid_path(&plan_path), sid.to_string()) {
         log::warn!("plan queue: write {name}.sid.txt failed: {e}");
@@ -698,42 +888,69 @@ async fn start_plan(
         seen_running: false,
         send: SendState::InFlight,
         event_end: None,
+        phase: Phase::Plan,
+        plan_sid: session_id.clone(),
+        at,
+        plan_text: text.to_string(),
+        model: resolve_model(text, settings.default_model.as_deref()),
+        fix_findings: settings.fix_findings,
     };
     state().owned.insert(session_id.clone(), run.clone());
     log::info!("plan queue: CLAIM {name} -> running/ (session {session_id})");
     emit_changed(app);
 
-    let model = resolve_model(text, settings.default_model.as_deref());
-    if let Some(model) = &model {
+    // A findings file or fix plan of an earlier run must not start a phase.
+    let _ = std::fs::remove_file(findings_path(&worktree_path, name));
+    let _ = std::fs::remove_file(fix_plan_path(&worktree_path, name));
+    let message = if settings.fix_findings {
+        format!("{text}\n\n{}", report_instruction(name))
+    } else {
+        text.to_string()
+    };
+    launch_phase(app, run, session_id, message).await;
+}
+
+/// Sets the model and yolo mode of the session of `run`, then sends `message` in a
+/// task (the send awaits the whole turn). The run is already in `owned`.
+async fn launch_phase(app: &AppHandle, run: OwnedRun, session_id: String, message: String) {
+    let name = file_name(&run.plan_path);
+    let worktree_path = run.worktree_path.to_string_lossy().into_owned();
+    if let Some(model) = &run.model {
         if let Err(e) = crate::chat::set_session_model(
             app.clone(),
-            worktree.id.clone(),
-            worktree.path.clone(),
+            run.worktree_id.clone(),
+            worktree_path.clone(),
             session_id.clone(),
             model.clone(),
         )
         .await
         {
             // Never send a plan on another model than its pin.
-            state().owned.remove(&session_id);
-            let reason = format!("set_session_model {model}: {e}");
-            move_plan(app, &run, &session_id, Bucket::Failed, &reason, "FAILED");
+            let reason = format!(
+                "{}set_session_model {model}: {e}",
+                run.phase.reason_prefix()
+            );
+            finish_plan(app, &session_id, &run, Bucket::Failed, &reason, false);
             return;
         }
         log::info!("plan queue: MODEL {name} -> {model} (session {session_id})");
     }
 
-    set_yolo_mode(app, worktree, &session_id).await;
+    set_yolo_mode(app, &run.worktree_id, &worktree_path, &session_id).await;
     log::info!(
-        "plan queue: START {name} -> {} (session {session_id}, yolo)",
-        worktree.name
+        "plan queue: START {name} {} (session {session_id}, yolo)",
+        run.phase.as_str()
     );
-    let (app, worktree_id, worktree_path, message) = (
-        app.clone(),
-        worktree.id.clone(),
-        worktree.path.clone(),
-        text.to_string(),
-    );
+    let (parallel_prompt, ai_language) = match crate::load_preferences_sync(app).ok() {
+        Some(p) => (
+            crate::resolve_stored_parallel_execution_prompt(
+                p.magic_prompts.parallel_execution.as_deref(),
+            ),
+            Some(p.ai_language.trim().to_string()).filter(|s| !s.is_empty()),
+        ),
+        None => (Some(crate::default_parallel_execution_prompt()), None),
+    };
+    let (app, worktree_id, model) = (app.clone(), run.worktree_id.clone(), run.model.clone());
     tauri::async_runtime::spawn(async move {
         let result = crate::chat::send_chat_message(
             app.clone(),
@@ -745,8 +962,8 @@ async fn start_plan(
             Some("yolo".to_string()),
             None,
             None,
-            None,
-            None,
+            parallel_prompt,
+            ai_language,
             None,
             None,
             None,
@@ -762,16 +979,16 @@ async fn start_plan(
             run.send = SendState::Returned { ok: result.is_ok() };
         }
         let _guard = TICK_LOCK.lock().await;
-        poll_owned(&app);
+        poll_owned(&app).await;
     });
 }
 
 /// Same session setup as Mr. Robot's yolo start: persist and broadcast the mode.
-async fn set_yolo_mode(app: &AppHandle, worktree: &Worktree, session_id: &str) {
+async fn set_yolo_mode(app: &AppHandle, worktree_id: &str, worktree_path: &str, session_id: &str) {
     if let Err(e) = crate::chat::update_session_state(
         app.clone(),
-        worktree.id.clone(),
-        worktree.path.clone(),
+        worktree_id.to_string(),
+        worktree_path.to_string(),
         session_id.to_string(),
         None,
         None,
@@ -815,7 +1032,7 @@ async fn set_yolo_mode(app: &AppHandle, worktree: &Worktree, session_id: &str) {
 
 async fn tick(app: &AppHandle) {
     let _guard = TICK_LOCK.lock().await;
-    poll_owned(app);
+    poll_owned(app).await;
     let data = match crate::projects::storage::load_projects_data(app) {
         Ok(data) => data,
         Err(e) => {
@@ -831,8 +1048,9 @@ async fn tick(app: &AppHandle) {
             if worktree.archived_at.is_some() {
                 continue;
             }
-            if state().recovered.insert(worktree.id.clone()) {
-                recover_worktree(app, worktree);
+            let first_sight = state().recovered.insert(worktree.id.clone());
+            if first_sight {
+                recover_worktree(app, settings, worktree).await;
             }
             maybe_start(app, settings, worktree).await;
         }
@@ -871,7 +1089,7 @@ pub fn start_plan_queue_scheduler(app: AppHandle) {
             let app = listen_app.clone();
             tauri::async_runtime::spawn(async move {
                 let _guard = TICK_LOCK.lock().await;
-                poll_owned(&app);
+                poll_owned(&app).await;
             });
         });
     }

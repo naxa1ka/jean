@@ -13,10 +13,11 @@ Design: `docs/superpowers/specs/2026-11-15-native-plan-queue-design.md`.
 
 ## Turning it on
 
-`Project.plan_queue_settings` (`enabled`, `default_model`) is saved through
-`update_project_settings` (`planQueueSettings`). The switch and the model
+`Project.plan_queue_settings` (`enabled`, `default_model`, `fix_findings`) is saved through
+`update_project_settings` (`planQueueSettings`). The switches and the model
 picker are in Project Settings → General. `default_model: None` means Jean's
-default Claude model.
+default Claude model. `fix_findings` (default off) turns on the findings review
+(see "Findings review").
 
 ## File layout
 
@@ -28,11 +29,19 @@ default Claude model.
 .jean/plans/paused/         skipped plans, out of the queue
 .jean/plans/QUEUE_PAUSED    marker: queue paused
 .jean/blocked/*.md          blocker markers written by a plan session
+.jean/findings/<plan file name>   findings that the plan session reported (not in git)
+.jean/findings/<plan stem>.fix.md fix plan written by the triage session (not in git)
 ```
 
 - `<plan>.sid.txt` keeps the jean-queue format
   (`sessionId=…\nat=…\nworktree=…\nhead=…\n`), so a run claimed by one runner
   can be adopted by the other.
+- `.sid.txt` has three optional keys for the findings review: `phase`
+  (`triage` or `fix`), `phaseSid` (session of that phase) and `phaseHead` (HEAD
+  at the start of the fix run). `sessionId` and `head` always keep the plan
+  session and the plan start head, so older readers see no change. In `done/`
+  and `failed/` a plan that ran a later phase has `sessionId` = plan session and
+  `phase` / `phaseSid` = the last phase.
 - The pause marker is `QUEUE_PAUSED`, not `PAUSED`: on a case-insensitive file
   system `PAUSED` and the `paused/` folder are the same name.
 - Only `*.md` files in `.jean/blocked/` count (a `.gitkeep` does not block).
@@ -45,6 +54,7 @@ default Claude model.
 | File                                              | Role                                                                     |
 | ------------------------------------------------- | ------------------------------------------------------------------------ |
 | `jean-core/src/plan_queue/outcome.rs`             | `decide_outcome` (pure port of jean-queue `outcome.mjs`)                 |
+| `jean-core/src/plan_queue/findings.rs`            | findings review: `Phase`, `after_phase`, `triage_outcome`, `recovery_target`, prompts |
 | `jean-core/src/plan_queue/gates.rs`               | `parse_needs` / `needs_met` (`needs-slice`, `needs-file`)                |
 | `jean-core/src/plan_queue/files.rs`               | buckets, moves, atomic claim, `.sid.txt`, `NNN-` prefix, name validation |
 | `jean-core/src/plan_queue/scheduler.rs`           | 10 s tick, claim/start/finish, restart recovery, wait reasons            |
@@ -102,6 +112,52 @@ project, each `running/*.md` is checked through its `.sid.txt` session id:
 live → adopt, ended → decide the outcome and move, no sid or unknown state →
 leave it as an orphan (the dialog shows it).
 
+## Findings review
+
+With `fix_findings` on, the runner acts on the findings that a plan reports. One
+round only:
+
+```
+plan run (session 1)  --Done--> .jean/findings/<plan file name> exists?
+   no  -> done/
+   yes -> triage run (session 2, changes no code) --> .jean/findings/<plan stem>.fix.md exists?
+            no  -> done/
+            yes -> fix run (session 3, message = fix plan text) -> done/ or failed/
+```
+
+- `start_plan` deletes a stale findings file and fix plan of the plan file name
+  (switch on or off). With the switch on it appends `report_instruction` to the
+  plan message: write each finding to the findings file; no findings = no file.
+  The plan file on disk is not changed.
+- The triage session (name `<plan stem>-triage`) reads the plan, the diff since
+  the plan start head and the findings file, marks each finding `fix` / `no fix`
+  under `## Triage`, and writes a cold-start fix plan when at least one is `fix`.
+- The fix session (name `<plan stem>-fix`) gets the fix plan text as its message.
+- Outcome rules (`after_phase`): the plan phase uses `decide_outcome`, and only
+  `Done` can start triage. The triage phase uses `triage_outcome` (session error,
+  blocker marker, session never ran → `failed/` with `findings triage: <reason>`;
+  a triage run makes no commit). The fix phase uses `decide_outcome` with the HEAD
+  at the start of the fix run; a result that is not `Done` is `failed/` with
+  `findings fix: <reason>`. A fix run never goes back to pending.
+- The loop guard is structural: `after_phase(Fix, …)` returns only `Finish`, the
+  findings instruction is appended only in `start_plan`, and `recovery_target`
+  maps an unknown phase to `Fix`. Maximum 3 sessions per plan.
+- The plan stays in `running/` and owned from the plan run to the end of the last
+  phase: the ended run is replaced by the run of the next phase in one lock scope,
+  so the dialog never shows the plan as stuck.
+- A later phase starts also when `QUEUE_PAUSED` exists, the project switch was
+  turned off or a foreign session is live. Pause and the switch stop the next
+  plan, not the phases of the plan that runs.
+- Restart: recovery checks the session of the current phase (`phaseSid`) and
+  adopts it, or reclaims it. A reclaimed run (ended while Jean was closed) never
+  starts a later phase: it finishes with the outcome of its phase.
+- After a `findings triage:` / `findings fix:` failure the work of the slice is
+  already on its branch. To continue the stack, move the plan file from
+  `failed/` to `done/` by hand. Retry runs the whole plan again (and can start
+  one new round).
+- Queue sessions get the parallel-execution prompt and the language from
+  preferences (earlier the runner passed none).
+
 Queue commands and the tick share `scheduler::lock_queue`, so a command never
 moves files while a tick picks, claims or finishes a plan.
 
@@ -156,15 +212,17 @@ in `jean-core/src/jean_mcp_core.rs`). No new Tauri or dispatch command exists.
 
 | Tool                     | Args                                    | Result                                 | Lists                                 |
 | ------------------------ | --------------------------------------- | -------------------------------------- | ------------------------------------- |
-| `get_plan_queue`         | `worktreeId`                            | `{ enabled, defaultModel, queue }`     | `READ_ONLY_SUBAGENT_TOOLS`            |
+| `get_plan_queue`         | `worktreeId`                            | `{ enabled, defaultModel, fixFindings, queue }` | `READ_ONLY_SUBAGENT_TOOLS`            |
 | `plan_queue_add`         | `worktreeId`, `name`, `content`         | `{ name }` (`NNN-<slug>.md`)           | `RATE_LIMITED_TOOLS`                  |
 | `plan_queue_action`      | `worktreeId`, `action`, `name?`         | `{ ok: true }`                         | `RATE_LIMITED_TOOLS`                  |
-| `set_plan_queue_enabled` | `projectId`, `enabled`, `defaultModel?` | `{ projectId, enabled, defaultModel }` | `RATE_LIMITED_TOOLS`, `APPROVAL_TOOLS` |
+| `set_plan_queue_enabled` | `projectId`, `enabled`, `defaultModel?`, `fixFindings?` | `{ projectId, enabled, defaultModel, fixFindings }` | `RATE_LIMITED_TOOLS`, `APPROVAL_TOOLS` |
 
 - `action` is one of `pause`, `resume`, `retry`, `skip`, `unskip`, `remove`,
   `clear_blocked`. Any other value is invalid params (-32602).
 - `defaultModel`: absent keeps the stored model; an empty string or `null`
   clears it; a string is trimmed and stored.
+- `fixFindings`: absent keeps the stored value; a boolean sets it; any other
+  type is invalid params.
 - `set_plan_queue_enabled` loads the project's `plan_queue_settings`, changes
   only `enabled` and `defaultModel`, and saves the whole struct through
   `update_project_settings`. Folder projects are refused.

@@ -99,6 +99,9 @@ pub struct ProjectPlanQueueSettings {
     pub enabled: bool,
     /// Model for plans with no `<!-- model: <id> -->` pin. `None` = Jean's default.
     pub default_model: Option<String>,
+    /// After a plan that reported findings, a separate session triages them and, when
+    /// a fix is worth it, a third session applies it. One round only. Default off.
+    pub fix_findings: bool,
 }
 
 /// Per-project automated issue fixing settings.
@@ -1090,6 +1093,11 @@ mod label_tests {
             serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
         assert!(parsed.enabled);
         assert!(parsed.default_model.is_none());
+        assert!(!parsed.fix_findings);
+
+        let parsed: ProjectPlanQueueSettings =
+            serde_json::from_value(serde_json::json!({ "fix_findings": true })).unwrap();
+        assert!(parsed.fix_findings);
     }
 
     #[test]

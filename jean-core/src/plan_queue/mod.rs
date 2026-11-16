@@ -6,6 +6,7 @@
 
 pub mod commands;
 pub mod files;
+pub mod findings;
 pub mod gates;
 pub mod outcome;
 pub mod scheduler;
