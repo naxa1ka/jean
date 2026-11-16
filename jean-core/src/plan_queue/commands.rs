@@ -245,7 +245,8 @@ pub fn read_queue(
                 .as_ref()
                 .and_then(|s| s.reason.clone())
                 .unwrap_or_default(),
-            session_id: sid.map(|s| s.session_id),
+            // After a findings phase failed, open the session that failed.
+            session_id: sid.map(|s| s.phase_sid.unwrap_or(s.session_id)),
         });
     }
     queue

@@ -16,6 +16,8 @@ export interface ProjectPlanQueueSettings {
   enabled: boolean
   /** Model for plans with no `<!-- model: <id> -->` pin. null = Jean's default. */
   default_model?: string | null
+  /** After a plan, triage its reported findings and apply one fix round. Default false. */
+  fix_findings?: boolean
 }
 
 export interface ProjectAutoFixSettings {

@@ -155,3 +155,5 @@ plan run (session 1)  --Done--> .jean/findings/<plan file name> exists?
 (Each slice adds one line here for a gap or a design conflict: `slice NN: <gap> -> <what you did>`.)
 - slice 01: plan_queue_add / plan_queue_action have no approval gate (design table) -> the tool descriptions and the slice 02 prompt tell the agent to ask
 - slice 01: needs-file accepts an absolute repo path, so a plan can test whether a file in another local git repo contains a text -> known exposure, kept; a ref that starts with - is refused before git runs
+- slice 03: the design table lists neither `fixFindings` argument nor result field -> `set_plan_queue_enabled` takes optional `fixFindings` (absent = keep; other type = invalid params) and returns it; `get_plan_queue` returns `fixFindings`
+- slice 03: after a `findings triage:` / `findings fix:` failure the work of the slice is already on its branch -> documented: move the plan file from `failed/` to `done/` by hand to continue the stack; Retry runs the whole plan again

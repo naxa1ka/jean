@@ -153,7 +153,7 @@ export function GeneralPane({
   )
 
   const planQueueSettings: ProjectPlanQueueSettings =
-    project?.plan_queue_settings ?? { enabled: false, default_model: null }
+    project?.plan_queue_settings ?? { enabled: false, default_model: null, fix_findings: false }
   const savePlanQueueSettings = useCallback(
     (next: ProjectPlanQueueSettings) => {
       updateSettings.mutate({ projectId, planQueueSettings: next })
@@ -618,6 +618,21 @@ export function GeneralPane({
                   )}
               </SelectContent>
             </Select>
+          </InlineField>
+
+          <InlineField
+            label="Review and fix findings after each plan"
+            description="After a plan, a separate session examines the findings that the plan reported. If a fix is worth it, one more session applies it to the same branch. One round only."
+            htmlFor="project-plan-queue-fix-findings"
+          >
+            <Switch
+              id="project-plan-queue-fix-findings"
+              checked={planQueueSettings.fix_findings ?? false}
+              onCheckedChange={fix_findings =>
+                savePlanQueueSettings({ ...planQueueSettings, fix_findings })
+              }
+              disabled={updateSettings.isPending}
+            />
           </InlineField>
         </SettingsSection>
       </div>

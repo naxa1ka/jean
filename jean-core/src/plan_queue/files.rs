@@ -107,6 +107,13 @@ pub struct SidFile {
     pub worktree: Option<String>,
     pub head: Option<String>,
     pub reason: Option<String>,
+    /// Findings review: phase of the current run (`triage` or `fix`). `head` stays
+    /// the start head of the plan phase, so older readers see no change.
+    pub phase: Option<String>,
+    /// Session id of the current phase (`sessionId` stays the plan session).
+    pub phase_sid: Option<String>,
+    /// HEAD at the start of the fix run.
+    pub phase_head: Option<String>,
 }
 
 impl SidFile {
@@ -126,6 +133,9 @@ impl SidFile {
                 // jean-queue writes `head=null` when it could not read HEAD.
                 "head" => sid.head = opt().filter(|v| v != "null"),
                 "reason" => sid.reason = opt(),
+                "phase" => sid.phase = opt(),
+                "phaseSid" => sid.phase_sid = opt(),
+                "phaseHead" => sid.phase_head = opt().filter(|v| v != "null"),
                 _ => {}
             }
         }
@@ -144,6 +154,9 @@ impl fmt::Display for SidFile {
             ("worktree", &self.worktree),
             ("head", &self.head),
             ("reason", &self.reason),
+            ("phase", &self.phase),
+            ("phaseSid", &self.phase_sid),
+            ("phaseHead", &self.phase_head),
         ];
         for (key, value) in optional {
             if let Some(value) = value {
@@ -308,6 +321,7 @@ mod tests {
                 worktree: Some("C:\\jean\\p\\wt=1".into()),
                 head: Some("deadbeef".into()),
                 reason: None,
+                ..SidFile::default()
             }
         );
         assert_eq!(sid.to_string(), text);
@@ -325,6 +339,50 @@ mod tests {
         assert_eq!(
             sid.to_string(),
             "sessionId=s1\nat=2026-11-15T10:00:00.000Z\nreason=no new commit on worktree HEAD\n"
+        );
+    }
+
+    #[test]
+    fn sid_file_round_trips_the_phase_keys() {
+        let text = "sessionId=plan-s
+at=t
+head=h0
+phase=fix
+phaseSid=fix-s
+phaseHead=h1
+";
+        let sid = SidFile::parse(text).unwrap();
+        assert_eq!(sid.phase.as_deref(), Some("fix"));
+        assert_eq!(sid.phase_sid.as_deref(), Some("fix-s"));
+        assert_eq!(sid.phase_head.as_deref(), Some("h1"));
+        assert_eq!(sid.to_string(), text);
+    }
+
+    #[test]
+    fn sid_file_with_phase_keys_keeps_session_and_head() {
+        // What an older reader looks at: sessionId and head keep their meaning.
+        let sid = SidFile::parse(
+            "sessionId=plan-s
+at=t
+head=h0
+phase=triage
+phaseSid=t-s
+",
+        )
+        .unwrap();
+        assert_eq!(sid.session_id, "plan-s");
+        assert_eq!(sid.head.as_deref(), Some("h0"));
+        // A Node runner file has none of the new keys.
+        let node = SidFile::parse(
+            "sessionId=s
+at=t
+head=h
+",
+        )
+        .unwrap();
+        assert_eq!(
+            (node.phase, node.phase_sid, node.phase_head),
+            (None, None, None)
         );
     }
 
