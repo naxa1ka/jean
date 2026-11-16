@@ -160,6 +160,22 @@ describe('describeApproval', () => {
         args: { projectId: 'p-1' },
       })
     ).toBe('Remove a project')
+    const queue = { ...approval, tool: 'set_plan_queue_enabled' }
+    expect(
+      describeApproval(
+        { ...queue, args: { projectId: 'p-1', enabled: true } },
+        'my-app'
+      )
+    ).toBe('Turn on the plan queue for project my-app')
+    expect(
+      describeApproval(
+        { ...queue, args: { projectId: 'p-1', enabled: false } },
+        'my-app'
+      )
+    ).toBe('Turn off the plan queue for project my-app')
+    expect(
+      describeApproval({ ...queue, args: { projectId: 'p-1', enabled: true } })
+    ).toBe('Turn on the plan queue for a project')
     expect(
       describeApproval({ ...approval, tool: 'custom_tool', args: {} })
     ).toBe('custom tool')

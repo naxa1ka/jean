@@ -12770,6 +12770,7 @@ mod tests {
                 "{mode}"
             );
             assert!(prompt.contains("start_run_environment"), "{mode}");
+            assert_eq!(prompt.matches("## Jean Plan Queue").count(), 1, "{mode}");
         }
     }
 

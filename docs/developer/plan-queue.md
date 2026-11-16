@@ -178,6 +178,20 @@ in `jean-core/src/jean_mcp_core.rs`). No new Tauri or dispatch command exists.
 - **Known exposure:** `needs-file` accepts an absolute `repo` path, so a plan
   can test whether a file in another local git repo contains a text.
 
+## System prompt
+
+The default global system prompt ends with a `## Jean Plan Queue` section. It
+tells agents when to split work into slices and which MCP tools to use. Two
+copies must stay equal: `default_global_system_prompt()` in
+`jean-core/src/lib.rs` and `DEFAULT_GLOBAL_SYSTEM_PROMPT` in
+`src/types/preferences.ts`. A stored prompt equal to the default without this
+section is a legacy default and gets the new text
+(`default_global_system_prompt_without_plan_queue()`); a customized prompt is
+kept. When the default changes again, freeze the old text first. The section
+counts against the 14,000-byte budget in
+`default_instructions_have_no_duplicate_rules_and_fit_budget`: shorten the
+text, do not raise the limit.
+
 ## Migration from jean-queue
 
 Jean cannot detect the Node runner. Before you turn on the switch:
