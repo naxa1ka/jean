@@ -996,6 +996,7 @@ mod tests {
     use super::{
         default_global_system_prompt, default_global_system_prompt_with_legacy_ui_verification,
         default_global_system_prompt_without_branch_rule,
+        default_global_system_prompt_without_plan_queue,
         default_global_system_prompt_without_secrets,
         default_global_system_prompt_without_security, default_model,
         default_parallel_execution_prompt, effective_global_system_prompt,
@@ -1272,6 +1273,32 @@ mod tests {
         );
         let custom = format!("{previous}\nExtra user rule.");
         assert!(!is_legacy_default_global_system_prompt(&custom));
+    }
+
+    #[test]
+    fn previous_default_without_plan_queue_section_is_legacy() {
+        let previous = default_global_system_prompt_without_plan_queue();
+        assert!(previous.ends_with("Do not print or echo it."));
+        assert!(!previous.contains("Jean Plan Queue"));
+        assert!(default_global_system_prompt().starts_with(&previous));
+        assert!(is_legacy_default_global_system_prompt(&previous));
+        assert!(is_legacy_default_global_system_prompt(
+            &previous.replace('\n', "\r\n")
+        ));
+        assert_eq!(
+            effective_global_system_prompt(Some(&previous)),
+            default_global_system_prompt()
+        );
+    }
+
+    #[test]
+    fn custom_prompt_with_plan_queue_section_is_kept() {
+        let previous = default_global_system_prompt_without_plan_queue();
+        for base in [previous, default_global_system_prompt()] {
+            let custom = format!("{base}\nExtra user rule.");
+            assert!(!is_legacy_default_global_system_prompt(&custom));
+            assert_eq!(effective_global_system_prompt(Some(&custom)), custom);
+        }
     }
 
     #[test]
@@ -2776,7 +2803,15 @@ fn default_global_system_prompt() -> String {
 
 ## Jean Secrets
 - When the user wants to set or give you a secret (API key, token, password, auth key, .env values), always use Jean MCP. First call `get_secret` to reuse a saved secret. If none matches, call `request_secret`.
-- Do NOT ask the user to paste a secret in chat, and do NOT invent one. Read the value only from the file path that Jean gives, inside a shell command. Do not print or echo it."#
+- Do NOT ask the user to paste a secret in chat, and do NOT invent one. Read the value only from the file path that Jean gives, inside a shell command. Do not print or echo it.
+
+## Jean Plan Queue
+- Work that needs more than one PR: split it into small slices (one slice = one PR, one goal) and run them through the Jean plan queue.
+- A slice runs unattended in a new full-access session with no history. Write it as a cold-start plan: repo paths, files to read, branch and base, exact verification commands, a "Done when" list, a stop rule.
+- A slice must add a commit, or the queue marks it failed. A failed slice does not stop the queue: a slice that needs an earlier one has `<!-- needs-slice: <earlier slice name> -->` in its first 5 lines.
+- Jean MCP: `get_plan_queue` (status), `plan_queue_add` (one call per slice, in run order), `plan_queue_action` (pause, resume, retry, skip, remove), `set_plan_queue_enabled` (turn the project queue on).
+- Ask the user before you add slices or turn the queue on. Do not add slices from inside a queued slice.
+- Blocked slice: write what a human must decide to `.jean/blocked/<name>.md` and stop. Never write it in `.jean/plans/`."#
         .to_string()
 }
 
@@ -2915,6 +2950,15 @@ fn without_section(prompt: &str, start: &str) -> String {
     format!("{}{}", &prompt[..begin], &prompt[end..])
 }
 
+/// The default global prompt before the Jean Plan Queue section was added. Derived from the current default: when the default text changes again, freeze the old text first, as PREVIOUS_DEFAULT_GLOBAL_SYSTEM_PROMPT does.
+fn default_global_system_prompt_without_plan_queue() -> String {
+    let current = default_global_system_prompt();
+    let end = current
+        .find("\n\n## Jean Plan Queue\n")
+        .expect("default prompt has Plan Queue section");
+    current[..end].to_string()
+}
+
 /// The default global prompt before the Security section was added.
 fn default_global_system_prompt_without_security() -> String {
     without_section(
@@ -2956,6 +3000,7 @@ fn default_global_system_prompt_with_legacy_ui_verification() -> String {
 pub(crate) fn is_legacy_default_global_system_prompt(prompt: &str) -> bool {
     let normalized = prompt.replace("\r\n", "\n");
     if normalized.trim() == PREVIOUS_DEFAULT_GLOBAL_SYSTEM_PROMPT.trim()
+        || normalized.trim() == default_global_system_prompt_without_plan_queue().trim()
         || normalized.trim() == default_global_system_prompt_without_security().trim()
         || normalized.trim() == default_global_system_prompt_without_secrets().trim()
         || normalized.trim() == default_global_system_prompt_with_legacy_ui_verification().trim()

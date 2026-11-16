@@ -70,6 +70,10 @@ export function describeApproval(
           : 'for an agent'
     return `${verb} MCP server ${text('backend')}:${text('name')} ${where}`
   }
+  if (approval.tool === 'set_plan_queue_enabled') {
+    const verb = args.enabled === false ? 'Turn off' : 'Turn on'
+    return `${verb} the plan queue for ${targetName ? `project ${targetName}` : 'a project'}`
+  }
   // A deleted worktree has no name to look up: fall back to its folder name
   const target =
     targetName ?? text('worktreePath').split(/[\\/]/).filter(Boolean).pop()

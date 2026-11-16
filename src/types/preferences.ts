@@ -673,7 +673,7 @@ Instruct each sub-agent to briefly outline its approach before implementing, so 
 
 When specifying subagent_type for Task tool calls, always use the fully qualified name exactly as listed in the system prompt (e.g., "code-simplifier:code-simplifier", not just "code-simplifier"). If the agent type contains a colon, include the full namespace:name string.`
 
-/** Default global system prompt (must match DEFAULT_GLOBAL_SYSTEM_PROMPT in src-tauri) */
+/** Default global system prompt (must match default_global_system_prompt() in jean-core/src/lib.rs) */
 export const DEFAULT_GLOBAL_SYSTEM_PROMPT = `Always use ASD-STE100 Simplified Technical English when you talk to me.
 
 ### 1. Planning Guidance
@@ -763,7 +763,15 @@ export const DEFAULT_GLOBAL_SYSTEM_PROMPT = `Always use ASD-STE100 Simplified Te
 
 ## Jean Secrets
 - When the user wants to set or give you a secret (API key, token, password, auth key, .env values), always use Jean MCP. First call \`get_secret\` to reuse a saved secret. If none matches, call \`request_secret\`.
-- Do NOT ask the user to paste a secret in chat, and do NOT invent one. Read the value only from the file path that Jean gives, inside a shell command. Do not print or echo it.`
+- Do NOT ask the user to paste a secret in chat, and do NOT invent one. Read the value only from the file path that Jean gives, inside a shell command. Do not print or echo it.
+
+## Jean Plan Queue
+- Work that needs more than one PR: split it into small slices (one slice = one PR, one goal) and run them through the Jean plan queue.
+- A slice runs unattended in a new full-access session with no history. Write it as a cold-start plan: repo paths, files to read, branch and base, exact verification commands, a "Done when" list, a stop rule.
+- A slice must add a commit, or the queue marks it failed. A failed slice does not stop the queue: a slice that needs an earlier one has \`<!-- needs-slice: <earlier slice name> -->\` in its first 5 lines.
+- Jean MCP: \`get_plan_queue\` (status), \`plan_queue_add\` (one call per slice, in run order), \`plan_queue_action\` (pause, resume, retry, skip, remove), \`set_plan_queue_enabled\` (turn the project queue on).
+- Ask the user before you add slices or turn the queue on. Do not add slices from inside a queued slice.
+- Blocked slice: write what a human must decide to \`.jean/blocked/<name>.md\` and stop. Never write it in \`.jean/plans/\`.`
 
 /** Default server system prompt (must match default_server_system_prompt in jean-core) */
 export const DEFAULT_SERVER_SYSTEM_PROMPT = `You help the user inspect and manage the server "{server_name}".
