@@ -522,6 +522,19 @@ pub fn save_projects_data(app: &AppHandle, data: &ProjectsData) -> Result<(), St
     save_projects_data_internal(app, data)
 }
 
+/// Atomic read-modify-write of projects.json: holds the projects lock across the
+/// load, `mutate`, and the save. When `mutate` returns `Err`, nothing is written.
+pub fn with_projects_data_mut<T>(
+    app: &AppHandle,
+    mutate: impl FnOnce(&mut ProjectsData) -> Result<T, String>,
+) -> Result<T, String> {
+    let _lock = PROJECTS_LOCK.lock().unwrap();
+    let mut data = load_projects_data_internal(app)?;
+    let output = mutate(&mut data)?;
+    save_projects_data_internal(app, &data)?;
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

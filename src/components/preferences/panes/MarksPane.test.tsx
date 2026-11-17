@@ -7,7 +7,11 @@ const mocks = vi.hoisted(() => ({
   marksLevel: 2,
   definitions: [] as MarkDefinition[],
   setMarkDefinitions: vi.fn(),
+  renameMark: vi.fn(),
+  removeMarkEverywhere: vi.fn(),
+  countMarkUsage: vi.fn(),
   toastError: vi.fn(),
+  toastSuccess: vi.fn(),
   levelServerIds: [] as (string | undefined)[],
 }))
 
@@ -20,15 +24,19 @@ vi.mock('@/lib/marks-level', () => ({
 
 vi.mock('@/lib/marks', () => ({
   MARK_LIST_LEVEL: 2,
+  MARK_EVERYWHERE_LEVEL: 3,
   useMarkDefinitions: () => mocks.definitions,
 }))
 
 vi.mock('@/services/marks', () => ({
   setMarkDefinitions: mocks.setMarkDefinitions,
+  renameMark: mocks.renameMark,
+  removeMarkEverywhere: mocks.removeMarkEverywhere,
+  countMarkUsage: mocks.countMarkUsage,
 }))
 
 vi.mock('sonner', () => ({
-  toast: { error: mocks.toastError, success: vi.fn() },
+  toast: { error: mocks.toastError, success: mocks.toastSuccess },
 }))
 
 import { MarksPane } from './MarksPane'
@@ -64,6 +72,13 @@ describe('MarksPane', () => {
     mocks.setMarkDefinitions.mockReset()
     mocks.setMarkDefinitions.mockResolvedValue([])
     mocks.toastError.mockReset()
+    mocks.toastSuccess.mockReset()
+    mocks.renameMark.mockReset()
+    mocks.renameMark.mockResolvedValue({ worktrees: 1, sessions: 2 })
+    mocks.removeMarkEverywhere.mockReset()
+    mocks.removeMarkEverywhere.mockResolvedValue({ worktrees: 1, sessions: 2 })
+    mocks.countMarkUsage.mockReset()
+    mocks.countMarkUsage.mockResolvedValue({ worktrees: 1, sessions: 2 })
     mocks.levelServerIds = []
   })
 
@@ -161,5 +176,88 @@ describe('MarksPane', () => {
       { ...reviewLater, icon: null },
       needsTesting,
     ])
+  })
+
+  describe('at marks level 3', () => {
+    beforeEach(() => {
+      mocks.marksLevel = 3
+    })
+
+    it('renames on every item of the server and shows the count', async () => {
+      renderPane('remote-1')
+      expect(
+        screen.queryByText(/Renaming does not update marked items yet/)
+      ).not.toBeInTheDocument()
+      const input = screen.getByLabelText('Name of Needs testing')
+      fireEvent.change(input, { target: { value: ' QA ' } })
+      fireEvent.blur(input)
+
+      expect(mocks.renameMark).toHaveBeenCalledWith(
+        'remote-1',
+        'Needs testing',
+        'QA'
+      )
+      expect(mocks.setMarkDefinitions).not.toHaveBeenCalled()
+      await waitFor(() =>
+        expect(mocks.toastSuccess).toHaveBeenCalledWith('Renamed in 3 items')
+      )
+    })
+
+    it('shows the usage counts before a remove', async () => {
+      renderPane('remote-1')
+      const buttons = screen.getAllByRole('button', {
+        name: 'Remove from list',
+      })
+      fireEvent.click(buttons[1] as HTMLElement)
+
+      expect(mocks.countMarkUsage).toHaveBeenCalledWith(
+        'remote-1',
+        'Needs testing'
+      )
+      expect(
+        await screen.findByText('Used by 1 worktree and 2 sessions.')
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('checkbox', { name: 'Also remove from these items' })
+      ).toBeChecked()
+      expect(mocks.setMarkDefinitions).not.toHaveBeenCalled()
+    })
+
+    it('removes from the items too when the box stays checked', async () => {
+      renderPane('remote-1')
+      fireEvent.click(
+        screen.getAllByRole('button', {
+          name: 'Remove from list',
+        })[1] as HTMLElement
+      )
+      await screen.findByText('Used by 1 worktree and 2 sessions.')
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+
+      await waitFor(() =>
+        expect(mocks.removeMarkEverywhere).toHaveBeenCalledWith(
+          'remote-1',
+          'Needs testing'
+        )
+      )
+      expect(mocks.setMarkDefinitions).not.toHaveBeenCalled()
+    })
+
+    it('removes only from the list when the box is unchecked', async () => {
+      renderPane('remote-1')
+      fireEvent.click(
+        screen.getAllByRole('button', {
+          name: 'Remove from list',
+        })[1] as HTMLElement
+      )
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: 'Also remove from these items' })
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+
+      await waitFor(() =>
+        expect(savedList()).toEqual(['remote-1', [reviewLater]])
+      )
+      expect(mocks.removeMarkEverywhere).not.toHaveBeenCalled()
+    })
   })
 })

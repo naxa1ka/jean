@@ -1,7 +1,18 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { ArrowDown, ArrowUp, Check, Trash2 } from '@/components/icons/reicon'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   Popover,
@@ -14,10 +25,20 @@ import {
   LABEL_COLORS,
   getLabelTextColor,
 } from '@/lib/label-colors'
-import { MARK_LIST_LEVEL, useMarkDefinitions } from '@/lib/marks'
+import {
+  MARK_EVERYWHERE_LEVEL,
+  MARK_LIST_LEVEL,
+  useMarkDefinitions,
+} from '@/lib/marks'
 import { useServerMarksLevel } from '@/lib/marks-level'
 import { useSettingsTargetServerId } from '@/lib/settings-target'
-import { setMarkDefinitions } from '@/services/marks'
+import {
+  countMarkUsage,
+  type MarkUsage,
+  removeMarkEverywhere,
+  renameMark,
+  setMarkDefinitions,
+} from '@/services/marks'
 import type { MarkDefinition } from '@/types/preferences'
 import { SettingsSection } from '../SettingsSection'
 
@@ -26,6 +47,8 @@ export function MarksPane() {
   const serverId = useSettingsTargetServerId()
   const marksLevel = useServerMarksLevel(serverId)
   const definitions = useMarkDefinitions(serverId)
+  const everywhere = marksLevel >= MARK_EVERYWHERE_LEVEL
+  const [removing, setRemoving] = useState<MarkDefinition | null>(null)
 
   /** Save the whole list. Returns false when the server rejects it. */
   const save = useCallback(
@@ -51,12 +74,27 @@ export function MarksPane() {
     )
   }
 
-  const update = (index: number, patch: Partial<MarkDefinition>) =>
-    save(
+  const update = async (index: number, patch: Partial<MarkDefinition>) => {
+    const current = definitions[index]
+    if (everywhere && current && patch.name !== undefined) {
+      try {
+        const usage = await renameMark(serverId, current.name, patch.name)
+        toast.success(`Renamed in ${itemCount(usage)}`)
+        return true
+      } catch (error) {
+        toast.error(`Failed to rename mark: ${error}`)
+        return false
+      }
+    }
+    return save(
       definitions.map((definition, i) =>
         i === index ? { ...definition, ...patch } : definition
       )
     )
+  }
+
+  const removeFromList = (name: string) =>
+    save(definitions.filter(definition => definition.name !== name))
 
   const move = (index: number, offset: -1 | 1) => {
     const next = [...definitions]
@@ -71,10 +109,12 @@ export function MarksPane() {
       title="Marks"
       description="One mark list for all projects of this server. Sessions and worktrees use these marks. The list order is the display order."
     >
-      <p className="text-xs text-muted-foreground">
-        Renaming does not update marked items yet. Removing a mark from the list
-        keeps it on marked items, under &ldquo;Not in list&rdquo;.
-      </p>
+      {!everywhere && (
+        <p className="text-xs text-muted-foreground">
+          Renaming does not update marked items yet. Removing a mark from the
+          list keeps it on marked items, under &ldquo;Not in list&rdquo;.
+        </p>
+      )}
       <ul className="flex flex-col gap-2" aria-label="Mark list">
         {definitions.map((definition, index) => (
           <MarkRow
@@ -85,7 +125,9 @@ export function MarksPane() {
             onChange={patch => update(index, patch)}
             onMove={offset => move(index, offset)}
             onRemove={() =>
-              void save(definitions.filter((_, i) => i !== index))
+              everywhere
+                ? setRemoving(definition)
+                : void removeFromList(definition.name)
             }
           />
         ))}
@@ -98,7 +140,100 @@ export function MarksPane() {
           ])
         }
       />
+      {removing && (
+        <RemoveMarkDialog
+          serverId={serverId}
+          definition={removing}
+          onClose={() => setRemoving(null)}
+          onRemoveFromList={() => removeFromList(removing.name)}
+        />
+      )}
     </SettingsSection>
+  )
+}
+
+function plural(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
+function itemCount(usage: MarkUsage) {
+  return plural(usage.worktrees + usage.sessions, 'item')
+}
+
+/** Confirm a remove: show how many items use the mark, and offer to remove it from them. */
+function RemoveMarkDialog({
+  serverId,
+  definition,
+  onClose,
+  onRemoveFromList,
+}: {
+  serverId: string | undefined
+  definition: MarkDefinition
+  onClose: () => void
+  onRemoveFromList: () => Promise<boolean>
+}) {
+  const [usage, setUsage] = useState<MarkUsage | null>(null)
+  const [alsoFromItems, setAlsoFromItems] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    countMarkUsage(serverId, definition.name)
+      .then(result => {
+        if (!cancelled) setUsage(result)
+      })
+      .catch(error => {
+        if (!cancelled) toast.error(`Failed to count mark usage: ${error}`)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [serverId, definition.name])
+
+  const confirm = async () => {
+    onClose()
+    if (!alsoFromItems) {
+      await onRemoveFromList()
+      return
+    }
+    try {
+      const removed = await removeMarkEverywhere(serverId, definition.name)
+      toast.success(`Removed from ${itemCount(removed)}`)
+    } catch (error) {
+      toast.error(`Failed to remove mark: ${error}`)
+    }
+  }
+
+  return (
+    <AlertDialog open onOpenChange={open => !open && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Remove &ldquo;{definition.name}&rdquo; from the list?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {usage
+              ? `Used by ${plural(usage.worktrees, 'worktree')} and ${plural(usage.sessions, 'session')}.`
+              : 'Counting marked items…'}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked={alsoFromItems}
+            onCheckedChange={checked => setAlsoFromItems(checked === true)}
+          />
+          Also remove from these items
+        </label>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={() => void confirm()}
+          >
+            Remove
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 

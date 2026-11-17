@@ -7,6 +7,9 @@ import { LOCAL_SERVER_ID } from '@/types/server-resource'
 /** Marks level from which a server has the managed mark list. */
 export const MARK_LIST_LEVEL = 2
 
+/** Marks level from which a server renames and removes a mark on all its items. */
+export const MARK_EVERYWHERE_LEVEL = 3
+
 /** Stable empty list for servers without a mark list. */
 export const NO_MARK_DEFINITIONS: MarkDefinition[] = []
 

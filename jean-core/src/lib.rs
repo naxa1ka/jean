@@ -62,6 +62,7 @@ pub mod jean_mcp_core;
 pub mod jean_mcp_socket;
 pub mod jean_mcp_stdio;
 mod kimi_cli;
+mod marks;
 mod muse_cli;
 mod opencode_cli;
 mod opencode_server;
@@ -4641,7 +4642,7 @@ pub async fn get_server_capabilities() -> Result<ServerCapabilitiesEnvelope, Str
         api_protocol: 1,
         api_protocol_min: 1,
         capabilities: std::collections::BTreeMap::from([
-            ("marks".to_string(), 2),
+            ("marks".to_string(), 3),
             ("multiServerTransport".to_string(), 1),
         ]),
         magic_prompts: prompts
@@ -4847,7 +4848,7 @@ mod server_capabilities_tests {
         assert_eq!(value["apiProtocol"], 1);
         assert_eq!(value["apiProtocolMin"], 1);
         assert_eq!(value["capabilities"]["multiServerTransport"], 1);
-        assert_eq!(value["capabilities"]["marks"], 2);
+        assert_eq!(value["capabilities"]["marks"], 3);
         assert!(value.get("featureSurfaces").is_none());
         assert!(value.get("magicPrompts").is_some());
     }
