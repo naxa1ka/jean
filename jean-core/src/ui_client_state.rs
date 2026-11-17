@@ -353,6 +353,7 @@ mod tests {
                             name: "Important".to_string(),
                             color: "#ef4444".to_string(),
                             pinned: true,
+                            added_at: None,
                         }],
                         ..ProjectCanvasSettings::default()
                     },

@@ -2258,6 +2258,7 @@ pub async fn update_session_state(
     waiting_for_input_type: Option<Option<String>>,
     plan_file_path: Option<Option<String>>,
     pending_plan_message_id: Option<Option<String>>,
+    labels: Option<Vec<LabelData>>,
     label: Option<Option<LabelData>>,
     clear_label: Option<bool>,
     review_results: Option<Option<serde_json::Value>>,
@@ -2356,13 +2357,16 @@ pub async fn update_session_state(
             if let Some(v) = pending_plan_message_id {
                 session.pending_plan_message_id = v;
             }
-            if let Some(v) = label {
-                session.label = v;
-            }
-            if let Some(clear) = clear_label {
-                if clear {
-                    session.label = None;
-                }
+            let clear_label = clear_label.unwrap_or(false);
+            if labels.is_some() || label.is_some() || clear_label {
+                session.labels = super::types::apply_session_label_update(
+                    &session.labels,
+                    labels,
+                    label,
+                    clear_label,
+                    now_ms(),
+                )?;
+                session.label = session.labels.first().cloned();
             }
             if let Some(v) = review_results {
                 session.review_results = v;
