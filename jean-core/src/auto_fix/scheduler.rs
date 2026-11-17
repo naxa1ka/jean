@@ -1487,6 +1487,7 @@ async fn approve_plan_and_start_yolo(
         Some(None),
         None,
         Some(None),
+        None, // labels
         None,
         None,
         None,

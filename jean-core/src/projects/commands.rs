@@ -6842,6 +6842,7 @@ fn append_coderabbit_review_label(labels: &mut Vec<LabelData>) {
         name: CODERABBIT_REVIEW_LABEL_NAME.to_string(),
         color: CODERABBIT_REVIEW_LABEL_COLOR.to_string(),
         pinned: false,
+        added_at: None,
     });
 }
 
@@ -11030,6 +11031,7 @@ async fn update_review_session_state(
         None,
         None,
         None,
+        None, // labels
         None,
         None,
         review_results,

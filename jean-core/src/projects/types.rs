@@ -976,11 +976,7 @@ mod tests {
     }
 }
 
-/// Deduplicate labels case-insensitively by name, preserving first occurrence order.
-pub fn dedupe_labels_by_name(labels: &mut Vec<LabelData>) {
-    let mut seen = std::collections::HashSet::new();
-    labels.retain(|label| seen.insert(label.name.to_lowercase()));
-}
+pub use crate::chat::types::dedupe_labels_by_name;
 
 #[cfg(test)]
 mod label_tests {

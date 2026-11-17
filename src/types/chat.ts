@@ -434,7 +434,9 @@ export interface Session {
   last_run_execution_mode?: ExecutionMode
   /** Unix timestamp when the last run started */
   last_run_started_at?: number
-  /** User-assigned label with color (e.g. "Needs testing") */
+  /** User-assigned marks with colors (e.g. "Needs testing") */
+  labels?: LabelData[]
+  /** Legacy single mark (old servers); new servers send the first entry of `labels` */
   label?: LabelData
   /** Messages queued for sending (synced between native + web clients) */
   queued_messages?: QueuedMessage[]
@@ -2053,6 +2055,19 @@ export interface LabelData {
   color: string
   /** Show this worktree label as a project-view filter tab when used in the current project */
   pinned?: boolean
+  /** Unix timestamp (ms) when this mark was added to its session */
+  added_at?: number
+}
+
+/** All marks of a session, with a fallback to the legacy single `label`. */
+export function getSessionLabels(
+  session: Pick<Session, 'labels' | 'label'>
+): LabelData[] {
+  return session.labels?.length
+    ? session.labels
+    : session.label
+      ? [session.label]
+      : []
 }
 
 /** ACP-advertised controls; Jean must not invent supported values. */

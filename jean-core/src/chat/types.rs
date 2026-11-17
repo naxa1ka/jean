@@ -17,6 +17,106 @@ pub struct LabelData {
     /// Show this worktree label as a project-view filter tab when used in the current project.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pinned: bool,
+    /// Unix timestamp (ms) when this mark was added to its session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<u64>,
+}
+
+/// Maximum number of marks on one session.
+pub const MAX_SESSION_LABELS: usize = 20;
+/// Maximum length (in chars) of a trimmed mark name.
+pub const MAX_LABEL_NAME_CHARS: usize = 64;
+
+/// True when `color` is a `#rgb` or `#rrggbb` hex color.
+pub fn is_valid_label_color(color: &str) -> bool {
+    color
+        .strip_prefix('#')
+        .is_some_and(|hex| matches!(hex.len(), 3 | 6) && hex.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Deduplicate labels case-insensitively by name, preserving first occurrence order.
+pub fn dedupe_labels_by_name(labels: &mut Vec<LabelData>) {
+    let mut seen = std::collections::HashSet::new();
+    labels.retain(|label| seen.insert(label.name.to_lowercase()));
+}
+
+/// Validate a full session mark list and keep `added_at` of marks that already exist.
+///
+/// Names and colors are trimmed. Duplicates (case-insensitive) are dropped quietly.
+/// A mark whose name is already in `current` keeps its `added_at`; new names get `now_ms`.
+fn validate_session_labels(
+    current: &[LabelData],
+    labels: Vec<LabelData>,
+    now_ms: u64,
+) -> Result<Vec<LabelData>, String> {
+    let mut next = Vec::with_capacity(labels.len());
+    for mut label in labels {
+        label.name = label.name.trim().to_string();
+        label.color = label.color.trim().to_string();
+        let name_chars = label.name.chars().count();
+        if name_chars == 0 || name_chars > MAX_LABEL_NAME_CHARS {
+            return Err(format!(
+                "Mark name must be 1 to {MAX_LABEL_NAME_CHARS} characters"
+            ));
+        }
+        if !is_valid_label_color(&label.color) {
+            let color = &label.color;
+            return Err(format!(
+                "Mark color must be a hex color like #eab308, got '{color}'"
+            ));
+        }
+        label.added_at = current
+            .iter()
+            .find(|existing| existing.name.eq_ignore_ascii_case(&label.name))
+            .map(|existing| existing.added_at)
+            .unwrap_or(Some(now_ms));
+        next.push(label);
+    }
+    dedupe_labels_by_name(&mut next);
+    if next.len() > MAX_SESSION_LABELS {
+        return Err(format!(
+            "A session can have at most {MAX_SESSION_LABELS} marks"
+        ));
+    }
+    Ok(next)
+}
+
+/// Compute the next session mark list for `update_session_state`.
+///
+/// `labels` replaces the whole list and wins over the legacy args. The legacy
+/// `label` / `clear_label` args (old clients) change only the first mark.
+pub fn apply_session_label_update(
+    current: &[LabelData],
+    labels: Option<Vec<LabelData>>,
+    label: Option<Option<LabelData>>,
+    clear_label: bool,
+    now_ms: u64,
+) -> Result<Vec<LabelData>, String> {
+    if let Some(labels) = labels {
+        return validate_session_labels(current, labels, now_ms);
+    }
+    let mut next = current.to_vec();
+    match label {
+        Some(Some(label)) => {
+            if next.is_empty() {
+                next.push(label);
+            } else {
+                next[0] = label;
+            }
+        }
+        Some(None) => {
+            if !next.is_empty() {
+                next.remove(0);
+            }
+        }
+        None if clear_label => {
+            if !next.is_empty() {
+                next.remove(0);
+            }
+        }
+        None => return Ok(next),
+    }
+    validate_session_labels(current, next, now_ms)
 }
 
 fn is_false(value: &bool) -> bool {
@@ -35,6 +135,7 @@ where
             name: s,
             color: DEFAULT_LABEL_COLOR.to_string(),
             pinned: false,
+            added_at: None,
         })),
         Some(serde_json::Value::Object(_)) => {
             let label: LabelData =
@@ -1006,7 +1107,10 @@ pub struct Session {
     /// Unix timestamp when the last run started
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_started_at: Option<u64>,
-    /// User-assigned label with color (e.g. "Needs testing")
+    /// User-assigned marks with colors (e.g. "Needs testing").
+    #[serde(default)]
+    pub labels: Vec<LabelData>,
+    /// Legacy single mark for old clients: always the first entry of `labels`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1316,6 +1420,7 @@ impl Session {
             last_run_status: None,
             last_run_execution_mode: None,
             last_run_started_at: None,
+            labels: Vec::new(),
             label: None,
             queued_messages: vec![],
             total_runs: 0,
@@ -1550,6 +1655,18 @@ fn default_version() -> u32 {
 }
 
 impl SessionMetadata {
+    /// Normalize a legacy single-label session into the multi-label field.
+    pub fn normalize_labels(&mut self) {
+        if self.labels.is_empty() {
+            if let Some(label) = self.label.take() {
+                self.labels.push(label);
+            }
+        } else {
+            self.label = None;
+        }
+        dedupe_labels_by_name(&mut self.labels);
+    }
+
     /// Any approval, permission, or user-input request a client shows as
     /// "waiting" while the turn is still running. The run-state snapshot and
     /// the session payload must agree on this, or a snapshot clears a badge
@@ -1705,7 +1822,8 @@ impl SessionMetadata {
             last_run_status: last_run.map(|r| r.status.clone()),
             last_run_execution_mode: last_run.and_then(|r| r.execution_mode.clone()),
             last_run_started_at: last_run.map(|r| r.started_at),
-            label: self.label.clone(),
+            labels: self.labels.clone(),
+            label: self.labels.first().cloned(),
             queued_messages: self.queued_messages.clone(),
             total_runs: self.runs.len(),
             loaded_run_start_index: self.runs.len(),
@@ -1781,7 +1899,12 @@ impl SessionMetadata {
         self.table_checked_rows = session.table_checked_rows.clone();
         self.hidden_table_checklists = session.hidden_table_checklists.clone();
         self.pinned_tables = session.pinned_tables.clone();
-        self.label = session.label.clone();
+        self.labels = if session.labels.is_empty() {
+            session.label.clone().into_iter().collect()
+        } else {
+            session.labels.clone()
+        };
+        self.label = None;
         self.scheduled_wakeup = session.scheduled_wakeup.clone();
         // NOTE: Do NOT overwrite queued_messages here. Queue state is managed
         // exclusively by enqueue/dequeue/remove/clear operations which use
@@ -2294,10 +2417,13 @@ pub struct SessionMetadata {
     /// Tables pinned by the user for quick access, in pin order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_tables: Vec<PinnedTable>,
-    /// User-assigned label with color (e.g. "Needs testing")
+    /// User-assigned marks with colors (e.g. "Needs testing").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<LabelData>,
+    /// Legacy single-label field. Deserialized for migration; never serialized.
     #[serde(
         default,
-        skip_serializing_if = "Option::is_none",
+        skip_serializing,
         deserialize_with = "deserialize_label_compat"
     )]
     pub label: Option<LabelData>,
@@ -2531,6 +2657,7 @@ impl SessionMetadata {
             table_checked_rows: HashMap::new(),
             hidden_table_checklists: vec![],
             pinned_tables: vec![],
+            labels: Vec::new(),
             label: None,
             queued_messages: vec![],
             last_opened_at: None,
@@ -4005,5 +4132,256 @@ mod tests {
         });
 
         assert_eq!(metadata.latest_claude_session_id(), Some("claude-sess-abc"));
+    }
+}
+
+#[cfg(test)]
+mod session_label_tests {
+    use super::*;
+
+    fn mark(name: &str, color: &str) -> LabelData {
+        LabelData {
+            name: name.to_string(),
+            color: color.to_string(),
+            pinned: false,
+            added_at: None,
+        }
+    }
+
+    fn mark_at(name: &str, added_at: u64) -> LabelData {
+        LabelData {
+            added_at: Some(added_at),
+            ..mark(name, "#22c55e")
+        }
+    }
+
+    /// Load metadata JSON the same way `load_metadata_internal` does.
+    fn load_metadata(extra: serde_json::Value) -> SessionMetadata {
+        let mut value = serde_json::to_value(SessionMetadata::new(
+            "s".to_string(),
+            "wt".to_string(),
+            "Session".to_string(),
+            0,
+        ))
+        .expect("serialize metadata");
+        for (key, field) in extra.as_object().expect("object") {
+            value[key] = field.clone();
+        }
+        let mut metadata: SessionMetadata =
+            serde_json::from_value(value).expect("deserialize metadata");
+        metadata.normalize_labels();
+        metadata
+    }
+
+    #[test]
+    fn session_label_legacy_string_moves_to_labels_with_default_color() {
+        let metadata = load_metadata(serde_json::json!({ "label": "Needs testing" }));
+        assert_eq!(metadata.labels.len(), 1);
+        assert_eq!(metadata.labels[0].name, "Needs testing");
+        assert_eq!(metadata.labels[0].color, DEFAULT_LABEL_COLOR);
+        assert!(metadata.label.is_none());
+    }
+
+    #[test]
+    fn session_label_legacy_object_moves_to_labels() {
+        let metadata =
+            load_metadata(serde_json::json!({ "label": { "name": "Bug", "color": "#ef4444" } }));
+        assert_eq!(metadata.labels.len(), 1);
+        assert_eq!(metadata.labels[0].name, "Bug");
+        assert_eq!(metadata.labels[0].color, "#ef4444");
+        assert!(metadata.label.is_none());
+    }
+
+    #[test]
+    fn session_label_labels_win_over_legacy_label() {
+        let metadata = load_metadata(serde_json::json!({
+            "labels": [{ "name": "Keep", "color": "#22c55e" }, { "name": "keep", "color": "#000" }],
+            "label": { "name": "Legacy", "color": "#eab308" }
+        }));
+        assert_eq!(metadata.labels.len(), 1);
+        assert_eq!(metadata.labels[0].name, "Keep");
+        assert!(metadata.label.is_none());
+    }
+
+    #[test]
+    fn session_label_metadata_roundtrip_writes_labels_not_label() {
+        let metadata = load_metadata(serde_json::json!({ "label": "Needs testing" }));
+        let value = serde_json::to_value(&metadata).expect("serialize");
+        assert!(value.get("label").is_none());
+        assert_eq!(value["labels"][0]["name"], "Needs testing");
+
+        let reloaded: SessionMetadata = serde_json::from_value(value).expect("reload");
+        assert_eq!(reloaded.labels.len(), 1);
+        assert!(reloaded.label.is_none());
+    }
+
+    #[test]
+    fn session_label_wire_session_sends_first_mark_as_label() {
+        let metadata = load_metadata(serde_json::json!({
+            "labels": [{ "name": "First", "color": "#22c55e" }, { "name": "Second", "color": "#ef4444" }]
+        }));
+        let session = metadata.to_session();
+        let value = serde_json::to_value(&session).expect("serialize session");
+        assert_eq!(value["labels"].as_array().map(Vec::len), Some(2));
+        assert_eq!(value["label"]["name"], "First");
+    }
+
+    #[test]
+    fn session_label_session_to_metadata_copies_labels() {
+        let mut metadata = load_metadata(serde_json::json!({}));
+        let mut session = metadata.to_session();
+        session.labels = vec![mark("A", "#22c55e"), mark("B", "#ef4444")];
+        session.label = Some(mark("Stale", "#eab308"));
+        metadata.update_from_session(&session);
+        assert_eq!(metadata.labels.len(), 2);
+        assert_eq!(metadata.labels[0].name, "A");
+        assert!(metadata.label.is_none());
+
+        // An old client that only sends `label` still sets the first mark.
+        session.labels.clear();
+        metadata.update_from_session(&session);
+        assert_eq!(metadata.labels.len(), 1);
+        assert_eq!(metadata.labels[0].name, "Stale");
+    }
+
+    #[test]
+    fn session_label_update_replaces_list_and_wins_over_legacy_args() {
+        let current = vec![mark_at("Old", 1)];
+        let next = apply_session_label_update(
+            &current,
+            Some(vec![mark("  New  ", " #ABC "), mark("Other", "#ef4444")]),
+            Some(Some(mark("Ignored", "#eab308"))),
+            true,
+            50,
+        )
+        .expect("valid");
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].name, "New");
+        assert_eq!(next[0].color, "#ABC");
+        assert_eq!(next[1].name, "Other");
+    }
+
+    #[test]
+    fn session_label_update_keeps_added_at_for_old_names_and_sets_now_for_new() {
+        let current = vec![mark_at("Keep", 10), mark_at("Drop", 20)];
+        let next = apply_session_label_update(
+            &current,
+            Some(vec![mark("keep", "#ef4444"), mark("Fresh", "#22c55e")]),
+            None,
+            false,
+            99,
+        )
+        .expect("valid");
+        assert_eq!(next[0].added_at, Some(10));
+        assert_eq!(next[1].added_at, Some(99));
+
+        // A client-sent added_at for a new name is replaced with now.
+        let next = apply_session_label_update(
+            &current,
+            Some(vec![mark_at("Brand new", 5)]),
+            None,
+            false,
+            99,
+        )
+        .expect("valid");
+        assert_eq!(next[0].added_at, Some(99));
+    }
+
+    #[test]
+    fn session_label_update_dedupes_quietly() {
+        let next = apply_session_label_update(
+            &[],
+            Some(vec![mark("Bug", "#ef4444"), mark("BUG", "#22c55e")]),
+            None,
+            false,
+            1,
+        )
+        .expect("valid");
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].color, "#ef4444");
+    }
+
+    #[test]
+    fn session_label_update_rejects_invalid_lists() {
+        let too_many: Vec<LabelData> = (0..=MAX_SESSION_LABELS)
+            .map(|i| mark(&format!("m{i}"), "#22c55e"))
+            .collect();
+        assert!(apply_session_label_update(&[], Some(too_many), None, false, 1).is_err());
+        assert!(apply_session_label_update(
+            &[],
+            Some(vec![mark("   ", "#22c55e")]),
+            None,
+            false,
+            1
+        )
+        .is_err());
+        let long_name = "x".repeat(MAX_LABEL_NAME_CHARS + 1);
+        assert!(apply_session_label_update(
+            &[],
+            Some(vec![mark(&long_name, "#22c55e")]),
+            None,
+            false,
+            1
+        )
+        .is_err());
+        let max_name = "\u{e9}".repeat(MAX_LABEL_NAME_CHARS);
+        assert!(apply_session_label_update(
+            &[],
+            Some(vec![mark(&max_name, "#22c55e")]),
+            None,
+            false,
+            1
+        )
+        .is_ok());
+        for color in ["red", "#12", "#12345g", "eab308", "#eab3088"] {
+            assert!(
+                apply_session_label_update(&[], Some(vec![mark("A", color)]), None, false, 1)
+                    .is_err(),
+                "{color} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn session_label_legacy_set_replaces_or_pushes_first_mark() {
+        let current = vec![mark_at("First", 1), mark_at("Second", 2)];
+        let next =
+            apply_session_label_update(&current, None, Some(Some(mark("New", "#000"))), false, 9)
+                .expect("valid");
+        assert_eq!(
+            next.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+            ["New", "Second"]
+        );
+        assert_eq!(next[0].added_at, Some(9));
+        assert_eq!(next[1].added_at, Some(2));
+
+        let next = apply_session_label_update(&[], None, Some(Some(mark("New", "#000"))), false, 9)
+            .expect("valid");
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].name, "New");
+    }
+
+    #[test]
+    fn session_label_legacy_null_and_clear_remove_only_first_mark() {
+        let current = vec![mark_at("First", 1), mark_at("Second", 2)];
+        let after_null =
+            apply_session_label_update(&current, None, Some(None), false, 9).expect("valid");
+        assert_eq!(after_null.len(), 1);
+        assert_eq!(after_null[0].name, "Second");
+
+        let after_clear = apply_session_label_update(&current, None, None, true, 9).expect("valid");
+        assert_eq!(after_clear.len(), 1);
+        assert_eq!(after_clear[0].name, "Second");
+        assert_eq!(after_clear[0].added_at, Some(2));
+
+        assert!(apply_session_label_update(&[], None, Some(None), true, 9)
+            .expect("valid")
+            .is_empty());
+        assert_eq!(
+            apply_session_label_update(&current, None, None, false, 9)
+                .expect("valid")
+                .len(),
+            2
+        );
     }
 }

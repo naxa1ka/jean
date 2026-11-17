@@ -2094,6 +2094,7 @@ fn parse_label_arg(args: &Value) -> Result<LabelData, ToolError> {
         name,
         color,
         pinned,
+        added_at: None,
     })
 }
 
@@ -2132,6 +2133,7 @@ fn parse_labels_arg(args: &Value) -> Result<Vec<LabelData>, ToolError> {
             name,
             color,
             pinned,
+            added_at: None,
         });
     }
     normalize_mcp_labels(parsed)
@@ -2176,10 +2178,7 @@ fn labels_match(left: &str, right: &str) -> bool {
 }
 
 fn validate_label_color(color: &str, field: &str) -> Result<(), ToolError> {
-    let hex = color.strip_prefix('#').ok_or_else(|| {
-        ToolError::invalid_params(format!("{field} must be a hex color like #eab308"))
-    })?;
-    if matches!(hex.len(), 3 | 6) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+    if crate::chat::types::is_valid_label_color(color) {
         Ok(())
     } else {
         Err(ToolError::invalid_params(format!(
@@ -5042,11 +5041,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"F
             name: "Feature".to_string(),
             color: "#22c55e".to_string(),
             pinned: false,
+            added_at: None,
         }];
         let label = crate::chat::types::LabelData {
             name: "feature".to_string(),
             color: "#ef4444".to_string(),
             pinned: false,
+            added_at: None,
         };
 
         let next = add_or_update_label(current, label);
@@ -5063,11 +5064,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"F
                 name: "Feature".to_string(),
                 color: "#22c55e".to_string(),
                 pinned: false,
+                added_at: None,
             },
             crate::chat::types::LabelData {
                 name: "Blocked".to_string(),
                 color: "#ef4444".to_string(),
                 pinned: false,
+                added_at: None,
             },
         ];
 
@@ -5084,11 +5087,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"F
                 name: "Feature".to_string(),
                 color: "#22c55e".to_string(),
                 pinned: false,
+                added_at: None,
             },
             crate::chat::types::LabelData {
                 name: "feature".to_string(),
                 color: "#ef4444".to_string(),
                 pinned: false,
+                added_at: None,
             },
         ];
 

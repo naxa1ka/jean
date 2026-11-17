@@ -279,8 +279,9 @@ fn load_metadata_internal(
         File::open(&path).map_err(|e| format!("Failed to open metadata file {path:?}: {e}"))?;
 
     let reader = BufReader::new(file);
-    let metadata: SessionMetadata = serde_json::from_reader(reader)
+    let mut metadata: SessionMetadata = serde_json::from_reader(reader)
         .map_err(|e| format!("Failed to parse metadata file {path:?}: {e}"))?;
+    metadata.normalize_labels();
 
     Ok(Some(metadata))
 }
@@ -971,6 +972,7 @@ pub fn load_sessions(
                 last_run_status: None,
                 last_run_execution_mode: None,
                 last_run_started_at: None,
+                labels: Vec::new(),
                 label: None,
                 queued_messages: vec![],
                 total_runs: 0,
@@ -1105,6 +1107,7 @@ where
                 last_run_status: None,
                 last_run_execution_mode: None,
                 last_run_started_at: None,
+                labels: Vec::new(),
                 label: None,
                 queued_messages: vec![],
                 total_runs: 0,

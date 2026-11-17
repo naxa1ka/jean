@@ -2455,6 +2455,8 @@ pub async fn dispatch_command(
                 field_opt(&args, "planFilePath", "plan_file_path")?;
             let pending_plan_message_id: Option<Option<String>> =
                 field_opt(&args, "pendingPlanMessageId", "pending_plan_message_id")?;
+            let labels: Option<Vec<crate::chat::types::LabelData>> =
+                field_opt(&args, "labels", "labels")?;
             // Special handling for label: distinguish between missing field (None) and null value (Some(None))
             let label: Option<Option<crate::chat::types::LabelData>> = match args.get("label") {
                 None => None,                    // field not provided -> None
@@ -2503,6 +2505,7 @@ pub async fn dispatch_command(
                 waiting_for_input_type,
                 plan_file_path,
                 pending_plan_message_id,
+                labels,
                 label,
                 clear_label,
                 review_results,

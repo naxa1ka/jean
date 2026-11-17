@@ -1007,6 +1007,7 @@ async fn set_yolo_mode(app: &AppHandle, worktree_id: &str, worktree_path: &str, 
         None,
         None,
         None,
+        None, // labels
         None,
         None,
         None,
