@@ -356,8 +356,8 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   },
   {
     action: 'toggle_session_label',
-    label: 'Toggle label',
-    description: 'Mark/unmark session with "Needs testing" label',
+    label: 'Marks…',
+    description: 'Open the mark picker for the current session or worktree',
     default_shortcut: 'mod+s',
     category: 'chat',
   },

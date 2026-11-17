@@ -158,7 +158,7 @@ describe('WorktreeItem session context menu', () => {
 
     for (const item of [
       'Rename',
-      'Add Label',
+      'Marks…',
       'Copy Session ID',
       'Delete Session',
     ]) {
@@ -260,7 +260,7 @@ describe('WorktreeItem session context menu', () => {
     renderExpanded()
 
     fireEvent.contextMenu(screen.getByText('Empty chat'))
-    await user.click(screen.getByRole('menuitem', { name: 'Add Label' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Marks…' }))
 
     expect(screen.getByText('label modal s2')).toBeInTheDocument()
   })

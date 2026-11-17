@@ -17,7 +17,6 @@ import type { Session } from '@/types/chat'
 
 interface SessionContextMenuItemsProps {
   session: Session
-  hasLabel: boolean
   resumeCommand: string | null
   nativeClientPending?: boolean
   onRename: () => void
@@ -33,7 +32,6 @@ interface SessionContextMenuItemsProps {
  */
 export function SessionContextMenuItems({
   session,
-  hasLabel,
   resumeCommand,
   nativeClientPending = false,
   onRename,
@@ -50,7 +48,7 @@ export function SessionContextMenuItems({
       </ContextMenuItem>
       <ContextMenuItem onSelect={onToggleLabel}>
         <Tag className="mr-2 h-4 w-4" />
-        {hasLabel ? 'Remove Label' : 'Add Label'}
+        Marks…
       </ContextMenuItem>
       {resumeCommand && onOpenInNativeClient && (
         <>

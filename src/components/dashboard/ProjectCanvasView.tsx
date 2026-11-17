@@ -57,6 +57,7 @@ import {
   Trash2,
   GripVertical,
   Tag,
+  Bookmark,
 } from '@/components/icons/reicon'
 import { Button, raisedToolbar } from '@/components/ui/button'
 import {
@@ -71,16 +72,6 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -153,16 +144,20 @@ import {
 import { LabelModal } from '@/components/chat/LabelModal'
 import { getLabelTextColor } from '@/lib/label-colors'
 import {
-  countWorktreesWithLabel,
-  deleteLabelFromRegistry,
+  MARK_LIST_LEVEL,
+  type ResolvedMark,
+  resolveMark,
+  useMarkDefinitions,
+} from '@/lib/marks'
+import { useServerMarksLevel } from '@/lib/marks-level'
+import type { MarkDefinition } from '@/types/preferences'
+import {
   getWorktreeLabels,
   getPinnedWorktreeLabelTabs,
   mergeLabelRegistry,
   mergePinnedLabels,
-  removeLabelFromLabels,
   setLabelPinned,
   type PinnedWorktreeLabelTab,
-  updateWorktreeLabelsByName,
 } from '@/lib/worktree-labels'
 import {
   type SessionCardData,
@@ -559,6 +554,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   onResolveConflicts,
   disableTextSelection = false,
   planQueue,
+  markDefinitions,
 }: {
   worktree: Worktree
   projectId: string
@@ -577,6 +573,8 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   disableTextSelection?: boolean
   /** Queue summary; compact rows put Pause/Resume in the long-press menu. */
   planQueue?: PlanQueueSummary
+  /** Mark list of the project's server; the definition wins for color and icon. */
+  markDefinitions: readonly MarkDefinition[]
 }) {
   const { elementRef: rowVisibilityRef, isVisible } = useCanvasRowVisibility()
   const stackedBaseBranch = getStackedBaseBranch(
@@ -687,16 +685,17 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   const uniqueSessionLabels = useMemo(() => {
     if (!cards) return []
     const seen = new Set<string>()
-    const result: LabelData[] = []
+    const result: ResolvedMark[] = []
     for (const card of cards) {
       for (const label of card.labels) {
-        if (seen.has(label.name)) continue
-        seen.add(label.name)
-        result.push(label)
+        const mark = resolveMark(label, markDefinitions)
+        if (seen.has(mark.name)) continue
+        seen.add(mark.name)
+        result.push(mark)
       }
     }
     return result
-  }, [cards])
+  }, [cards, markDefinitions])
 
   const lastActivity = formatRelativeTime(sessionMetrics?.latestActivityAt)
   const displayBranch = gitStatus?.current_branch ?? worktree.branch
@@ -709,7 +708,9 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
     securityAlertNumber: worktree.security_alert_number,
     advisoryGhsaId: worktree.advisory_ghsa_id,
   })
-  const worktreeLabels = getWorktreeLabels(worktree)
+  const worktreeLabels = getWorktreeLabels(worktree).map(label =>
+    resolveMark(label, markDefinitions)
+  )
   const waitingCount = sessionMetrics?.waitingCount ?? 0
   const runningCount = sessionMetrics?.runningCount ?? 0
   const isStale =
@@ -774,20 +775,26 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
           {compactLabels.length > 0 && !labelsExpanded && (
             <button
               type="button"
-              aria-label={`Show labels: ${compactLabels.map(l => l.name).join(', ')}`}
+              aria-label={`Show marks: ${compactLabels.map(l => l.name).join(', ')}`}
               aria-expanded={false}
               title={compactLabels.map(l => l.name).join(', ')}
               className="-m-1.5 flex shrink-0 items-center gap-1.5 p-1.5"
               onClick={toggleLabelsExpanded}
               onKeyDown={e => e.stopPropagation()}
             >
-              {compactLabels.slice(0, 3).map(label => (
-                <span
-                  key={label.name}
-                  className="size-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: label.color }}
-                />
-              ))}
+              {compactLabels.slice(0, 3).map(label =>
+                label.icon ? (
+                  <span key={label.name} className="text-2xs leading-none">
+                    {label.icon}
+                  </span>
+                ) : (
+                  <span
+                    key={label.name}
+                    className="size-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: label.color }}
+                  />
+                )
+              )}
               {compactLabels.length > 3 && (
                 <span className="text-2xs text-muted-foreground">
                   +{compactLabels.length - 3}
@@ -802,7 +809,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
         {labelsExpanded && compactLabels.length > 0 && (
           <button
             type="button"
-            aria-label="Hide labels"
+            aria-label="Hide marks"
             aria-expanded
             className="flex flex-wrap items-center gap-1 py-0.5 text-left"
             onClick={toggleLabelsExpanded}
@@ -817,6 +824,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
                   color: getLabelTextColor(label.color),
                 }}
               >
+                {label.icon && <span className="mr-1">{label.icon}</span>}
                 {label.name}
               </span>
             ))}
@@ -1031,6 +1039,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
                       color: getLabelTextColor(label.color),
                     }}
                   >
+                    {label.icon && <span className="mr-1">{label.icon}</span>}
                     {label.name}
                   </span>
                 ))}
@@ -1053,6 +1062,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
                     color: getLabelTextColor(label.color),
                   }}
                 >
+                  {label.icon && <span className="mr-1">{label.icon}</span>}
                   {label.name}
                 </span>
               ))}
@@ -1127,8 +1137,8 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
         {onSetLabels && hasCompactDetails && <ContextMenuSeparator />}
         {onSetLabels && (
           <ContextMenuItem onSelect={handleSetLabels}>
-            <Tag className="mr-2 h-4 w-4" />
-            Set labels
+            <Bookmark className="mr-2 h-4 w-4" />
+            Marks…
           </ContextMenuItem>
         )}
       </ContextMenuContent>
@@ -1157,6 +1167,8 @@ export function ProjectCanvasView({
   const projectLabels = useProjectsStore(
     state => state.projectCanvasSettings[projectId]?.labels ?? EMPTY_LABELS
   )
+  const marksLevel = useServerMarksLevel(project.serverId)
+  const markDefinitions = useMarkDefinitions(project.serverId)
 
   // Project action mutations
   const createBaseSession = useCreateBaseSession()
@@ -1318,14 +1330,26 @@ export function ProjectCanvasView({
     return labels
   }, [readyWorktrees, pendingWorktrees])
 
-  // All worktree labels (unfiltered by search) for the label modal
+  // Labels for the mark picker: the server mark list plus the project pins.
+  // Older servers have no list: they keep the client registry and labels in use.
   const allWorktreeLabels = useMemo(
     () =>
-      mergeLabelRegistry(
-        mergeLabelRegistry(projectLabels, projectPinnedLabels),
-        assignedWorktreeLabels
-      ),
-    [projectLabels, projectPinnedLabels, assignedWorktreeLabels]
+      marksLevel >= MARK_LIST_LEVEL
+        ? mergePinnedLabels(
+            markDefinitions.map(({ name, color }) => ({ name, color })),
+            projectPinnedLabels
+          )
+        : mergeLabelRegistry(
+            mergeLabelRegistry(projectLabels, projectPinnedLabels),
+            assignedWorktreeLabels
+          ),
+    [
+      marksLevel,
+      markDefinitions,
+      projectLabels,
+      projectPinnedLabels,
+      assignedWorktreeLabels,
+    ]
   )
 
   // Load sessions for all worktrees dynamically using useQueries.
@@ -2741,10 +2765,6 @@ export function ProjectCanvasView({
     worktreeId: string
     currentLabels: LabelData[]
   } | null>(null)
-  const [labelDeleteTarget, setLabelDeleteTarget] = useState<{
-    label: LabelData
-    assignedCount: number
-  } | null>(null)
 
   const openWorktreeLabelModal = useCallback(
     (worktree: Worktree) => {
@@ -2853,18 +2873,6 @@ export function ProjectCanvasView({
           worktreeId: worktreeLabelTarget.worktreeId,
           labels,
         })
-        useProjectsStore
-          .getState()
-          .setProjectCanvasLabels(
-            projectId,
-            mergeLabelRegistry(
-              mergeLabelRegistry(
-                projectLabels,
-                worktreeLabelTarget.currentLabels
-              ),
-              labels
-            )
-          )
         setWorktreeLabelTarget(target =>
           target ? { ...target, currentLabels: labels } : target
         )
@@ -2872,10 +2880,10 @@ export function ProjectCanvasView({
           queryKey: projectsQueryKeys.worktrees(projectId),
         })
       } catch (error) {
-        toast.error(`Failed to update labels: ${error}`)
+        toast.error(`Failed to update marks: ${error}`)
       }
     },
-    [worktreeLabelTarget, queryClient, projectId, projectLabels]
+    [worktreeLabelTarget, queryClient, projectId]
   )
 
   const handleLabelPinnedChange = useCallback(
@@ -2889,12 +2897,6 @@ export function ProjectCanvasView({
       useProjectsStore
         .getState()
         .setProjectCanvasPinnedLabels(projectId, nextPinnedLabels)
-      useProjectsStore
-        .getState()
-        .setProjectCanvasLabels(
-          projectId,
-          mergeLabelRegistry(projectLabels, [{ ...label, pinned }])
-        )
 
       const worktreesToUpdate = worktreeSections.flatMap(s => {
         const wt = s.worktree
@@ -2947,167 +2949,11 @@ export function ProjectCanvasView({
           : target
       )
     },
-    [
-      projectId,
-      projectLabels,
-      projectPinnedLabels,
-      queryClient,
-      worktreeSections,
-    ]
+    [projectId, projectPinnedLabels, queryClient, worktreeSections]
   )
-
-  const handleLabelColorChange = useCallback(
-    async (labelName: string, newColor: string) => {
-      useProjectsStore
-        .getState()
-        .setProjectCanvasLabels(
-          projectId,
-          updateWorktreeLabelsByName(projectLabels, labelName, newColor)
-        )
-
-      if (
-        projectPinnedLabels.some(
-          label => label.name.toLowerCase() === labelName.toLowerCase()
-        )
-      ) {
-        useProjectsStore.getState().setProjectCanvasPinnedLabels(
-          projectId,
-          projectPinnedLabels.map(label =>
-            label.name.toLowerCase() === labelName.toLowerCase()
-              ? { ...label, color: newColor }
-              : label
-          )
-        )
-      }
-
-      const worktreesToUpdate = worktreeSections.flatMap(s => {
-        const wt = s.worktree
-        return getWorktreeLabels(wt).some(
-          label => label.name.toLowerCase() === labelName.toLowerCase()
-        )
-          ? [wt]
-          : []
-      })
-
-      if (worktreesToUpdate.length === 0) return
-
-      const results = await Promise.allSettled(
-        worktreesToUpdate.map(wt =>
-          invoke('update_worktree_labels', {
-            worktreeId: wt.id,
-            labels: updateWorktreeLabelsByName(
-              getWorktreeLabels(wt),
-              labelName,
-              newColor
-            ),
-          })
-        )
-      )
-
-      const failures = results.filter(r => r.status === 'rejected')
-      if (failures.length > 0) {
-        toast.error(`Failed to update color for ${failures.length} worktree(s)`)
-      }
-
-      queryClient.invalidateQueries({
-        queryKey: projectsQueryKeys.worktrees(projectId),
-      })
-    },
-    [
-      projectId,
-      projectLabels,
-      projectPinnedLabels,
-      worktreeSections,
-      queryClient,
-    ]
-  )
-
-  const handleDeleteLabelRequest = useCallback(
-    (label: LabelData) => {
-      const allWorktrees = [...readyWorktrees, ...pendingWorktrees]
-      setLabelDeleteTarget({
-        label,
-        assignedCount: countWorktreesWithLabel(allWorktrees, label.name),
-      })
-    },
-    [readyWorktrees, pendingWorktrees]
-  )
-
-  const handleConfirmDeleteLabel = useCallback(async () => {
-    if (!labelDeleteTarget) return
-
-    const labelName = labelDeleteTarget.label.name
-    const allWorktrees = [...readyWorktrees, ...pendingWorktrees]
-    const worktreesToUpdate = allWorktrees.filter(wt =>
-      getWorktreeLabels(wt).some(
-        label => label.name.toLowerCase() === labelName.toLowerCase()
-      )
-    )
-
-    useProjectsStore
-      .getState()
-      .setProjectCanvasLabels(
-        projectId,
-        deleteLabelFromRegistry(projectLabels, labelName)
-      )
-    useProjectsStore
-      .getState()
-      .setProjectCanvasPinnedLabels(
-        projectId,
-        deleteLabelFromRegistry(projectPinnedLabels, labelName)
-      )
-
-    if (worktreesToUpdate.length > 0) {
-      const results = await Promise.allSettled(
-        worktreesToUpdate.map(wt =>
-          invoke('update_worktree_labels', {
-            worktreeId: wt.id,
-            labels: removeLabelFromLabels(getWorktreeLabels(wt), labelName),
-          })
-        )
-      )
-
-      const failures = results.filter(r => r.status === 'rejected')
-      if (failures.length > 0) {
-        toast.error(
-          `Failed to delete label from ${failures.length} worktree(s)`
-        )
-      } else {
-        toast.success(`Deleted label "${labelName}"`)
-      }
-
-      queryClient.invalidateQueries({
-        queryKey: projectsQueryKeys.worktrees(projectId),
-      })
-    } else {
-      toast.success(`Deleted label "${labelName}"`)
-    }
-
-    setWorktreeLabelTarget(target =>
-      target
-        ? {
-            ...target,
-            currentLabels: removeLabelFromLabels(
-              target.currentLabels,
-              labelName
-            ),
-          }
-        : target
-    )
-    setLabelDeleteTarget(null)
-  }, [
-    labelDeleteTarget,
-    pendingWorktrees,
-    projectId,
-    projectLabels,
-    projectPinnedLabels,
-    queryClient,
-    readyWorktrees,
-  ])
 
   // Keyboard navigation - disable when any modal/dialog is open
-  const isModalOpen =
-    !!selectedWorktreeModal || worktreeLabelModalOpen || !!labelDeleteTarget
+  const isModalOpen = !!selectedWorktreeModal || worktreeLabelModalOpen
   const { cardRefs } = useCanvasKeyboardNav({
     cards: flatCards,
     selectedIndex,
@@ -4003,6 +3849,7 @@ export function ProjectCanvasView({
                             onResolveConflicts={handleCanvasResolveConflicts}
                             disableTextSelection={disableWorktreeTextSelection}
                             planQueue={planQueue}
+                            markDefinitions={markDefinitions}
                           />
                           {activeFilterTab === 'auto_fix' && (
                             <MrRobotProgress
@@ -4041,7 +3888,7 @@ export function ProjectCanvasView({
         </div>
       </div>
 
-      {/* Worktree Label Modal */}
+      {/* Worktree mark picker */}
       <LabelModal
         key={worktreeLabelTarget?.worktreeId ?? 'wt-label'}
         isOpen={worktreeLabelModalOpen}
@@ -4052,44 +3899,11 @@ export function ProjectCanvasView({
         sessionId={null}
         currentLabels={worktreeLabelTarget?.currentLabels ?? []}
         target="worktree"
+        serverId={project.serverId}
         onApplyLabels={handleWorktreeLabelApply}
-        onColorChange={handleLabelColorChange}
         onPinnedChange={handleLabelPinnedChange}
-        onDeleteLabel={handleDeleteLabelRequest}
         extraLabels={allWorktreeLabels}
       />
-
-      <AlertDialog
-        open={!!labelDeleteTarget}
-        onOpenChange={open => {
-          if (!open) setLabelDeleteTarget(null)
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete label?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Deleting <strong>{labelDeleteTarget?.label.name}</strong> will
-              remove it from the label list
-              {labelDeleteTarget?.assignedCount
-                ? ` and from ${labelDeleteTarget.assignedCount} worktree${
-                    labelDeleteTarget.assignedCount === 1 ? '' : 's'
-                  }`
-                : ''}
-              . This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={handleConfirmDeleteLabel}
-            >
-              Delete label
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       {/* Session Chat Modal */}
       <SessionChatModal

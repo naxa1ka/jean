@@ -8,7 +8,6 @@ import { SessionContextMenuItems } from '@/components/chat/SessionContextMenuIte
 import { useOpenInNativeClient } from '@/components/chat/hooks/useOpenInNativeClient'
 import { getResumeCommand } from '@/components/chat/session-card-utils'
 import { reconnectNativeCliSession } from '@/services/chat'
-import { useChatStore } from '@/store/chat-store'
 import type { Session } from '@/types/chat'
 
 interface SidebarSessionContextMenuProps {
@@ -44,7 +43,6 @@ function SidebarSessionContextMenuContent({
   onLabel,
   onDelete,
 }: Omit<SidebarSessionContextMenuProps, 'children'>) {
-  const hasLabel = useChatStore(state => !!state.sessionLabels[session.id])
   const { openInNativeClient, isPending } = useOpenInNativeClient(
     worktreeId,
     worktreePath
@@ -55,7 +53,6 @@ function SidebarSessionContextMenuContent({
     <ContextMenuContent className="w-64">
       <SessionContextMenuItems
         session={session}
-        hasLabel={hasLabel}
         resumeCommand={resumeCommand}
         nativeClientPending={isPending}
         onRename={() => onRename(session)}

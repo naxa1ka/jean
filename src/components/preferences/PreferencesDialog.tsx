@@ -14,6 +14,7 @@ import {
   Terminal,
   Server,
   Cpu,
+  Bookmark,
   type LucideIcon,
 } from '@/components/icons/reicon'
 import {
@@ -71,6 +72,7 @@ import { UsagePane } from './panes/UsagePane'
 import { IntegrationsPane } from './panes/IntegrationsPane'
 import { WebAccessPane } from './panes/WebAccessPane'
 import { OpinionatedPane } from './panes/OpinionatedPane'
+import { MarksPane } from './panes/MarksPane'
 import {
   getPreferenceSearchEntries,
   searchPreferenceEntries,
@@ -96,6 +98,7 @@ interface NavigationItem {
 
 const navigationItems: NavigationItem[] = [
   { id: 'general', name: 'General', icon: Settings },
+  { id: 'marks', name: 'Marks', icon: Bookmark },
   { id: 'appearance', name: 'Appearance', icon: Palette },
   { id: 'keybindings', name: 'Keybindings', icon: Keyboard, desktopOnly: true },
   { id: 'backends', name: 'Backends', icon: Cpu },
@@ -143,6 +146,7 @@ const paneIconMap: Record<PreferencePane, LucideIcon> = {
   'mcp-servers': Plug,
   integrations: Puzzle,
   'web-access': Globe,
+  marks: Bookmark,
 }
 
 /** Group search results by pane, preserving Fuse.js ranking order within each group. */
@@ -218,6 +222,28 @@ export function PreferencesDialog() {
     setSettingsServerId(serverId)
     window.localStorage.setItem(SETTINGS_TARGET_KEY, serverId)
   }, [])
+
+  // `openPreferencesPane(pane, serverId)` also selects the target server
+  const preferencesTargetServerId = useUIStore(
+    state => state.preferencesTargetServerId
+  )
+  useEffect(() => {
+    if (!preferencesOpen || !preferencesTargetServerId) return
+    useUIStore.setState({ preferencesTargetServerId: null })
+    if (
+      preferencesTargetServerId === LOCAL_SERVER_ID ||
+      remoteConnections.some(
+        connection => connection.id === preferencesTargetServerId
+      )
+    ) {
+      handleSettingsServerChange(preferencesTargetServerId)
+    }
+  }, [
+    preferencesOpen,
+    preferencesTargetServerId,
+    remoteConnections,
+    handleSettingsServerChange,
+  ])
 
   useEffect(() => {
     if (
@@ -810,6 +836,11 @@ export function PreferencesDialog() {
                     className="min-w-0 max-w-full"
                   >
                     <OpinionatedPane />
+                  </div>
+                )}
+                {activePane === 'marks' && (
+                  <div id="pref-pane-marks" className="min-w-0 max-w-full">
+                    <MarksPane />
                   </div>
                 )}
                 {activePane === 'web-access' && (

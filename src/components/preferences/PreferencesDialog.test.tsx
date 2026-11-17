@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
-import { render, screen, waitFor, within } from '@/test/test-utils'
+import { act, render, screen, waitFor, within } from '@/test/test-utils'
 import { useUIStore } from '@/store/ui-store'
 import type * as KeybindingsPaneModule from './panes/KeybindingsPane'
 import type * as MagicPromptsPaneModule from './panes/MagicPromptsPane'
@@ -102,6 +102,13 @@ vi.mock('./panes/WebAccessPane', () => ({
   WebAccessPane: () => <div>Web access pane</div>,
 }))
 
+vi.mock('./panes/MarksPane', async () => {
+  const { useSettingsTargetServerId } = await import('@/lib/settings-target')
+  return {
+    MarksPane: () => <div>Marks pane for {useSettingsTargetServerId()}</div>,
+  }
+})
+
 describe('PreferencesDialog', () => {
   beforeEach(() => {
     HTMLElement.prototype.hasPointerCapture = vi.fn(() => false)
@@ -121,6 +128,7 @@ describe('PreferencesDialog', () => {
     useUIStore.setState({
       preferencesOpen: true,
       preferencesPane: null,
+      preferencesTargetServerId: null,
     })
   })
 
@@ -235,6 +243,30 @@ describe('PreferencesDialog', () => {
     expect(selector).toHaveTextContent('Dev Server')
   })
 
+  it('opens Marks for the server given to openPreferencesPane', () => {
+    settingsServerMocks.native = true
+    settingsServerMocks.connections = [
+      {
+        id: 'dev-server',
+        name: 'Dev Server',
+        url: 'http://dev.test',
+        token: 'token',
+      },
+    ]
+    useUIStore.setState({ preferencesOpen: false })
+    render(<PreferencesDialog />)
+
+    act(() => {
+      useUIStore.getState().openPreferencesPane('marks', 'dev-server')
+    })
+
+    expect(screen.getByText('Marks pane for dev-server')).toBeInTheDocument()
+    expect(
+      screen.getByRole('combobox', { name: 'Settings server' })
+    ).toHaveTextContent('Dev Server')
+    expect(useUIStore.getState().preferencesTargetServerId).toBeNull()
+  })
+
   it('still closes from the desktop header close button while search is open', async () => {
     const user = userEvent.setup()
 
@@ -282,6 +314,7 @@ describe('PreferencesDialog', () => {
         .map(button => button.textContent?.trim())
     ).toEqual([
       'General',
+      'Marks',
       'Appearance',
       'Keybindings',
       'Backends',

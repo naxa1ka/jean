@@ -66,6 +66,8 @@ import {
 import { isBaseSession, type Project, type Worktree } from '@/types/projects'
 import { NO_SESSION_LABELS, type Session } from '@/types/chat'
 import { SessionMarkChips } from './SessionMarkChips'
+import { useMarkDefinitions } from '@/lib/marks'
+import { getResourceServerId } from '@/lib/marks-level'
 import { isNativeApp } from '@/lib/environment'
 import { isImeComposingEvent } from '@/lib/ime-composition'
 import { toast } from 'sonner'
@@ -521,6 +523,7 @@ export const SessionChatModal = memo(function SessionChatModal({
       : NO_SESSION_LABELS
   )
   const namingSessionIds = useChatStore(state => state.namingSessionIds)
+  const markDefinitions = useMarkDefinitions(getResourceServerId(worktreeId))
 
   // Rename session state
   const renameSession = useRenameSession()
@@ -1208,7 +1211,6 @@ export const SessionChatModal = memo(function SessionChatModal({
   const renderSessionMenuItems = (session: Session) => (
     <SessionContextMenuItems
       session={session}
-      hasLabel={!!useChatStore.getState().sessionLabels[session.id]}
       resumeCommand={getResumeCommand(session)}
       nativeClientPending={isOpeningInNativeClient}
       onRename={() => handleStartRename(session.id, session.name)}
@@ -1527,7 +1529,10 @@ export const SessionChatModal = memo(function SessionChatModal({
                               </Tooltip>
                             )}
                             {renamingSessionId !== session.id && (
-                              <SessionMarkChips labels={card.labels} />
+                              <SessionMarkChips
+                                labels={card.labels}
+                                definitions={markDefinitions}
+                              />
                             )}
                             {tab.collapsible &&
                               renamingSessionId !== session.id && (
