@@ -19,7 +19,13 @@ vi.mock('@/services/preferences', () => ({
   },
 }))
 
-import { findDefinition, resolveMark, useMarkDefinitions } from './marks'
+import {
+  findDefinition,
+  getMarkedSessions,
+  resolveMark,
+  toggleMark,
+  useMarkDefinitions,
+} from './marks'
 
 const reviewLater: MarkDefinition = {
   name: 'Review later',
@@ -90,5 +96,78 @@ describe('useMarkDefinitions', () => {
     mocks.marksLevel = 1
     const { result } = renderHook(() => useMarkDefinitions('remote-1'))
     expect(result.current).toEqual([])
+  })
+})
+
+describe('getMarkedSessions', () => {
+  const card = (
+    id: string,
+    labels: { name: string; color: string; added_at?: number }[],
+    archived_at?: number
+  ) => ({ session: { id, name: `Session ${id}`, archived_at }, labels })
+
+  it('returns an empty list when no session has marks', () => {
+    expect(getMarkedSessions([], [reviewLater])).toEqual([])
+    expect(getMarkedSessions([card('a', [])], [reviewLater])).toEqual([])
+  })
+
+  it('leaves out archived sessions', () => {
+    const result = getMarkedSessions(
+      [
+        card('a', [{ name: 'Blocked', color: '#000' }], 123),
+        card('b', [{ name: 'Blocked', color: '#000' }]),
+      ],
+      [blocked]
+    )
+    expect(result.map(entry => entry.sessionId)).toEqual(['b'])
+  })
+
+  it('puts tracked sessions first, then the newest mark', () => {
+    const result = getMarkedSessions(
+      [
+        card('old', [{ name: 'Blocked', color: '#000', added_at: 1 }]),
+        card('new', [{ name: 'Blocked', color: '#000', added_at: 9 }]),
+        card('tracked', [
+          { name: 'Blocked', color: '#000', added_at: 5 },
+          { name: 'review later', color: '#000', added_at: 2 },
+        ]),
+        card('none', [{ name: 'Blocked', color: '#000' }]),
+      ],
+      [reviewLater, blocked]
+    )
+    expect(result.map(entry => entry.sessionId)).toEqual([
+      'tracked',
+      'new',
+      'old',
+      'none',
+    ])
+    expect(result[0]?.name).toBe('Session tracked')
+    expect(result[0]?.marks.map(mark => mark.name)).toEqual([
+      'Review later',
+      'Blocked',
+    ])
+  })
+})
+
+describe('toggleMark', () => {
+  it('adds the mark and keeps the others with their added_at', () => {
+    expect(
+      toggleMark([{ name: 'Blocked', color: '#000', added_at: 4 }], reviewLater)
+    ).toEqual([
+      { name: 'Blocked', color: '#000', added_at: 4 },
+      { name: 'Review later', color: '#3b82f6' },
+    ])
+  })
+
+  it('removes only that mark, matched without case', () => {
+    expect(
+      toggleMark(
+        [
+          { name: 'review later', color: '#000', added_at: 1 },
+          { name: 'Blocked', color: '#000', added_at: 4 },
+        ],
+        reviewLater
+      )
+    ).toEqual([{ name: 'Blocked', color: '#000', added_at: 4 }])
   })
 })

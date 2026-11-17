@@ -93,6 +93,22 @@ message, or a finished run never clears it.
   - `D`, `L`, `R` and their `<Kbd>` hints are native desktop only. The buttons
     work everywhere.
 
+## Canvas badge and quick toggles
+
+- Canvas worktree rows (`WorktreeSectionHeader`) show `WorktreeMarkedSessionsBadge`
+  (`src/components/dashboard/`): Bookmark icon + the number of non-archived
+  sessions with marks (`getMarkedSessions(cards, definitions)` in
+  `src/lib/marks.ts`: tracked first, then the newest `added_at`). The accent is
+  the first tracked mark's color. The tooltip lists up to 8 `name — chips` rows.
+  A click dispatches `open-session-modal` for the first entry (it does not mark
+  the session read). Compact (mobile) rows show the icon and count only. The
+  badge replaces the old per-session chips in the header; the worktree's own
+  chips stay, and canvas search/sort still match session marks.
+- The session context menu (`SessionContextMenuItems`, needs `worktreeId`) has
+  one checkbox item per tracked definition of the session's server, at marks
+  level 4 only. `toggleMark(labels, definition)` adds or removes that mark and
+  keeps the others with their `added_at`; the result goes to `setSessionLabels`.
+
 ## Rendering: `resolveMark`
 
 Items keep a copy of `name` and `color`. At render time,

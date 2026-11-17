@@ -143,12 +143,7 @@ import {
 
 import { LabelModal } from '@/components/chat/LabelModal'
 import { getLabelTextColor } from '@/lib/label-colors'
-import {
-  MARK_LIST_LEVEL,
-  type ResolvedMark,
-  resolveMark,
-  useMarkDefinitions,
-} from '@/lib/marks'
+import { MARK_LIST_LEVEL, resolveMark, useMarkDefinitions } from '@/lib/marks'
 import { useServerMarksLevel } from '@/lib/marks-level'
 import type { MarkDefinition } from '@/types/preferences'
 import {
@@ -218,6 +213,7 @@ import {
 } from './canvas-worktree-filters'
 import { MrRobotPanel, MrRobotProgress } from './MrRobotPanel'
 import { getWorktreeLabelContainerClassName } from './worktree-label-layout'
+import { WorktreeMarkedSessionsBadge } from './WorktreeMarkedSessionsBadge'
 import {
   CANVAS_ROW_STATE_LABELS,
   getCanvasRowAttention,
@@ -682,21 +678,6 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
     [cards]
   )
 
-  const uniqueSessionLabels = useMemo(() => {
-    if (!cards) return []
-    const seen = new Set<string>()
-    const result: ResolvedMark[] = []
-    for (const card of cards) {
-      for (const label of card.labels) {
-        const mark = resolveMark(label, markDefinitions)
-        if (seen.has(mark.name)) continue
-        seen.add(mark.name)
-        result.push(mark)
-      }
-    }
-    return result
-  }, [cards, markDefinitions])
-
   const lastActivity = formatRelativeTime(sessionMetrics?.latestActivityAt)
   const displayBranch = gitStatus?.current_branch ?? worktree.branch
   const showBranchBadge = shouldShowWorktreeBranchBadge({
@@ -740,7 +721,16 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
         mergeable: prStatus?.mergeable,
       })
     : null
-  const compactLabels = [...worktreeLabels, ...uniqueSessionLabels]
+  const compactLabels = worktreeLabels
+  const markedSessionsBadge = (
+    <WorktreeMarkedSessionsBadge
+      worktreeId={worktree.id}
+      worktreePath={worktree.path}
+      cards={cards}
+      definitions={markDefinitions}
+      compact={compact}
+    />
+  )
 
   const compactContent = compact && (
     <div className="flex min-w-0 items-start gap-2.5">
@@ -802,6 +792,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
               )}
             </button>
           )}
+          {markedSessionsBadge}
           <span className="ml-auto shrink-0 pl-2 text-xs tabular-nums text-muted-foreground">
             {lastActivity}
           </span>
@@ -1050,22 +1041,10 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
                 )}
               </span>
             )}
+            {markedSessionsBadge}
           </div>
           {showDetails && sessionMetrics && (
             <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-              {uniqueSessionLabels.map(label => (
-                <span
-                  key={label.name}
-                  className="rounded px-2 py-0.5 text-2xs font-medium"
-                  style={{
-                    backgroundColor: label.color,
-                    color: getLabelTextColor(label.color),
-                  }}
-                >
-                  {label.icon && <span className="mr-1">{label.icon}</span>}
-                  {label.name}
-                </span>
-              ))}
               {lastActivity && (
                 <span className="rounded px-2 py-0.5">{lastActivity}</span>
               )}

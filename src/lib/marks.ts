@@ -117,3 +117,62 @@ export function firstTrackedDefinition(
 ): MarkDefinition | undefined {
   return definitions.find(definition => definition.tracked)
 }
+
+/** A session with marks, as the canvas worktree badge lists it. */
+export interface MarkedSession {
+  sessionId: string
+  name: string
+  /** Tracked marks first, then the item order. */
+  marks: ResolvedMark[]
+}
+
+interface MarkedSessionSource {
+  session: { id: string; name: string; archived_at?: number }
+  labels: readonly LabelData[]
+}
+
+/**
+ * Non-archived sessions that have marks. Sessions with a tracked mark come
+ * first, then the newest `added_at` (a mark without one counts as oldest).
+ */
+export function getMarkedSessions(
+  cards: readonly MarkedSessionSource[],
+  definitions: readonly MarkDefinition[]
+): MarkedSession[] {
+  const entries: (MarkedSession & { tracked: boolean; addedAt: number })[] = []
+  for (const card of cards) {
+    if (card.session.archived_at || card.labels.length === 0) continue
+    const marks = card.labels.map(label => resolveMark(label, definitions))
+    const tracked = marks.filter(mark => mark.tracked)
+    entries.push({
+      sessionId: card.session.id,
+      name: card.session.name,
+      marks: [...tracked, ...marks.filter(mark => !mark.tracked)],
+      tracked: tracked.length > 0,
+      addedAt: Math.max(...card.labels.map(label => label.added_at ?? 0)),
+    })
+  }
+  entries.sort(
+    (a, b) => Number(b.tracked) - Number(a.tracked) || b.addedAt - a.addedAt
+  )
+  return entries.map(({ sessionId, name, marks }) => ({
+    sessionId,
+    name,
+    marks,
+  }))
+}
+
+/**
+ * Adds or removes one definition's mark (by name, case-insensitive). The other
+ * marks stay as they are, with their `added_at`. The server sets `added_at` of
+ * a new mark.
+ */
+export function toggleMark(
+  labels: readonly LabelData[],
+  definition: MarkDefinition
+): LabelData[] {
+  const key = definition.name.toLowerCase()
+  const without = labels.filter(label => label.name.toLowerCase() !== key)
+  if (without.length < labels.length) return without
+  return [...labels, { name: definition.name, color: definition.color }]
+}
