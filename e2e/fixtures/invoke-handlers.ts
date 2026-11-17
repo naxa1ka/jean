@@ -77,6 +77,8 @@ export const defaultResponses: Record<string, unknown> = {
   count_mark_usage: { worktrees: 0, sessions: 0 },
   rename_mark: { worktrees: 0, sessions: 0 },
   remove_mark_everywhere: { worktrees: 0, sessions: 0 },
+  list_tracked_items: { entries: [] },
+  clear_tracked_marks: [],
 
   // UI State
   get_native_client_id: '11111111-1111-4111-8111-111111111111',

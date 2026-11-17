@@ -208,6 +208,21 @@ pub async fn dispatch_command(
             emit_cache_invalidation(app, &["preferences", "sessions", "projects"]);
             to_value(result)
         }
+        "list_tracked_items" => to_value(crate::marks::list_tracked_items(app.clone()).await?),
+        "clear_tracked_marks" => {
+            let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;
+            let worktree_path: String = field(&args, "worktreePath", "worktree_path")?;
+            let session_id: Option<String> = field_opt(&args, "sessionId", "session_id")?;
+            let result = crate::marks::clear_tracked_marks(
+                app.clone(),
+                worktree_id,
+                worktree_path,
+                session_id,
+            )
+            .await?;
+            emit_cache_invalidation(app, &["sessions", "projects"]);
+            to_value(result)
+        }
         "set_window_vibrancy" => {
             let enabled: bool = from_field(&args, "enabled")?;
             crate::set_window_vibrancy(app.clone(), enabled).await?;

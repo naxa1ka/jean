@@ -55,6 +55,44 @@ items"). "Remove from list" opens a confirm dialog with the usage counts and
 "Also remove from these items" (checked: `removeMarkEverywhere`; unchecked: the
 list only, the items keep an orphan mark).
 
+## Tracked marks (level 4)
+
+A definition with `tracked: true` (built-in `🔖 Review later`) puts its items in
+the bell **Tracked** tab. Only Done clears the mark. Opening the session, a new
+message, or a finished run never clears it.
+
+- Index: each `SessionIndexEntry` has `label_names` (lower-cased mark names),
+  next to `unread_summary`. Every metadata write that changes the marks updates
+  it. `None` = an index from before level 4: `list_tracked_items` reads that
+  session's metadata once and saves the names back.
+- `list_tracked_items() -> { entries }` (`jean-core/src/marks.rs`): every live
+  session and worktree of all projects with a tracked mark. An entry has `kind`
+  (`session` / `worktree`), project and worktree ids and names, `session`
+  (session entries), `marks` (only the tracked ones), and `added_at` (newest
+  mark). Newest first; `None` last. It reads metadata only for index hits.
+  Archived worktrees and closed sessions are left out. No tracked definitions
+  = empty list.
+- `clear_tracked_marks(worktreeId, worktreePath, sessionId?)`: removes the
+  tracked marks of the session (or of the worktree when no session id) and keeps
+  the others. Returns the marks the item keeps. Emits `["sessions", "projects"]`.
+- Remote routing scopes `project_id`, `worktree_id`, and `session` of each
+  entry (`decorateServerResult`).
+- Client: `useConsolidatedTrackedItems` (`src/services/multi-server-sessions.ts`),
+  query key `['all-sessions', 'tracked', sourceKey]`. It asks only servers with
+  marks level >= 4 (`useTrackedServerSources`). `projects` and `preferences`
+  invalidations also refresh it.
+- Bell (`src/components/unread/UnreadBell.tsx`): tabs `Unread (n) | Tracked (n)`
+  (hidden when no server has level 4). The trigger shows when either count is
+  above 0. Every row shows `project · worktree [· server]`.
+  - Tracked tab: a click opens the session without marking it read, or opens the
+    worktree on the canvas. **Done** (button, or `D`) removes the row at once,
+    calls `clear_tracked_marks` on the item's server, and refetches on error.
+  - Unread tab: **Review later** (button, or `L`) adds the first tracked
+    definition of the item's server (list order) with `update_session_state`
+    `labels`, then marks the session read.
+  - `D`, `L`, `R` and their `<Kbd>` hints are native desktop only. The buttons
+    work everywhere.
+
 ## Rendering: `resolveMark`
 
 Items keep a copy of `name` and `color`. At render time,
@@ -96,6 +134,7 @@ they are, so their marks become orphans.
 | 1     | Many marks per session   | Multi-select                                    |
 | 2     | Managed mark list        | Picker and chips use the list; Settings → Marks |
 | 3     | Rename/remove everywhere | Settings rename and remove change all items     |
+| 4     | Tracked list in the bell | Bell Tracked tab, Done, Review later            |
 
 Read the level with `useServerMarksLevel(serverId)` or
 `getMarksLevelForResource(id)` (`src/lib/marks-level.ts`). The native app's local

@@ -1,10 +1,15 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { toast } from 'sonner'
 import {
   BellDot,
+  Bookmark,
+  BookmarkPlus,
   Loader2,
   CheckCircle2,
+  CheckIcon,
   AlertTriangle,
   CirclePause,
+  GitBranch,
   HelpCircle,
   FileText,
 } from '@/components/icons/reicon'
@@ -14,23 +19,42 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { Kbd } from '@/components/ui/kbd'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { SessionMarkChips } from '@/components/chat/SessionMarkChips'
 import { cn } from '@/lib/utils'
 import { invoke, invokeForServer } from '@/lib/transport'
 import { parseServerResourceKey } from '@/lib/server-resource'
+import {
+  firstTrackedDefinition,
+  TRACKED_MARKS_LEVEL,
+  useMarkDefinitionsByServer,
+} from '@/lib/marks'
+import { useMarksLevelLookup } from '@/lib/marks-level'
 import { useQueryClient } from '@tanstack/react-query'
 import { chatQueryKeys, useUnreadSessions } from '@/services/chat'
+import {
+  useConsolidatedTrackedItems,
+  useTrackedServerSources,
+} from '@/services/multi-server-sessions'
 import { usePreferences } from '@/services/preferences'
 import { useProjectsStore } from '@/store/projects-store'
 import { useChatStore } from '@/store/chat-store'
 import { useUIStore } from '@/store/ui-store'
 import { useUnreadCount } from './useUnreadCount'
 import { formatShortcutDisplay } from '@/types/keybindings'
-import type { Session } from '@/types/chat'
+import {
+  getSessionLabels,
+  type LabelData,
+  type Session,
+  type TrackedItemEntry,
+  type TrackedItemsResponse,
+} from '@/types/chat'
+import { LOCAL_SERVER_ID } from '@/types/server-resource'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isNativeApp } from '@/lib/environment'
 import { isUnreadSession } from './unread-utils'
@@ -49,6 +73,9 @@ function formatRelativeTime(timestamp: number): string {
 }
 
 const UNREAD_LIST_QUERY_KEY = ['all-sessions', 'unread']
+const TRACKED_LIST_QUERY_KEY = ['all-sessions', 'tracked']
+
+type BellTab = 'unread' | 'tracked'
 
 interface UnreadItem {
   session: Session
@@ -59,6 +86,63 @@ interface UnreadItem {
   worktreePath: string
   serverId?: string
   serverName?: string
+}
+
+/** Stable key of a tracked row: the session id, or the worktree id. */
+function trackedItemKey(item: TrackedItemEntry): string {
+  return item.session
+    ? `session:${item.session.id}`
+    : `worktree:${item.worktree_id}`
+}
+
+/** Raw id on the owning server (the bell rows carry scoped ids for remote servers). */
+function resourceIdOn(serverId: string | undefined, id: string): string {
+  const parsed = parseServerResourceKey(id)
+  return serverId && parsed?.serverId === serverId ? parsed.resourceId : id
+}
+
+function invokeOnServer<T>(
+  serverId: string | undefined,
+  command: string,
+  args: Record<string, unknown>
+): Promise<T> {
+  return serverId
+    ? invokeForServer<T>(serverId, command, args)
+    : invoke<T>(command, args)
+}
+
+function sessionItemOf(item: TrackedItemEntry, session: Session): UnreadItem {
+  return {
+    session,
+    projectId: item.project_id,
+    projectName: item.project_name,
+    worktreeId: item.worktree_id,
+    worktreeName: item.worktree_name,
+    worktreePath: item.worktree_path,
+    serverId: item.serverId,
+    serverName: item.serverName,
+  }
+}
+
+/** `project · worktree [· server]` line of every bell row. */
+function RowContext({
+  projectName,
+  worktreeName,
+  serverName,
+}: {
+  projectName: string
+  worktreeName: string
+  serverName?: string
+}) {
+  return (
+    <span className="flex min-w-0 items-center gap-1 text-2xs text-muted-foreground/60">
+      <span className="shrink-0 font-medium uppercase tracking-wider">
+        {projectName}
+      </span>
+      <span className="truncate">· {worktreeName}</span>
+      {serverName && <span className="truncate">· {serverName}</span>}
+    </span>
+  )
 }
 
 function getSessionStatus(session: Session, isSending: boolean) {
@@ -164,8 +248,37 @@ interface UnreadBellProps {
   hideTitle?: boolean
 }
 
+/** Row action button (Review later, Done). Shown on hover/focus on desktop. */
+function RowAction({
+  label,
+  onClick,
+  alwaysVisible,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  alwaysVisible: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={cn(
+        'flex shrink-0 items-center gap-1 self-center rounded-md px-1.5 py-1 text-2xs text-muted-foreground transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 cursor-pointer',
+        !alwaysVisible && 'opacity-0 group-hover:opacity-100'
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
 export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
   const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState<BellTab>('unread')
   const [focusedIndex, setFocusedIndex] = useState(-1)
   const [snapshotItems, setSnapshotItems] = useState<UnreadItem[] | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -183,10 +296,33 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
     isLoading,
     isFetching,
   } = useUnreadSessions(open || unreadCount > 0)
+  // Tracked items drive the trigger too, so this query stays on while mounted.
+  const trackedSupported = useTrackedServerSources().length > 0
+  const { data: trackedData } = useConsolidatedTrackedItems(true)
+  const trackedItems = useMemo(
+    () => (trackedSupported ? (trackedData?.entries ?? []) : []),
+    [trackedData, trackedSupported]
+  )
+  const trackedCount = trackedItems.length
+  const marksLevel = useMarksLevelLookup()
   const sendingSessionIds = useChatStore(state => state.sendingSessionIds)
+  const activeTab: BellTab = trackedSupported ? tab : 'unread'
+
+  // Open on Unread when it has items, else on Tracked.
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (next)
+        setTab(unreadCount > 0 || trackedCount === 0 ? 'unread' : 'tracked')
+      setOpen(next)
+    },
+    [trackedCount, unreadCount]
+  )
+  const handleOpenChangeRef = useRef(handleOpenChange)
+  handleOpenChangeRef.current = handleOpenChange
+
   // Listen for command palette event to open the popover
   useEffect(() => {
-    const handler = () => setOpen(true)
+    const handler = () => handleOpenChangeRef.current(true)
     window.addEventListener('command:open-unread-sessions', handler)
     return () =>
       window.removeEventListener('command:open-unread-sessions', handler)
@@ -201,6 +337,10 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
       })
       void queryClient.refetchQueries(
         { queryKey: UNREAD_LIST_QUERY_KEY },
+        { cancelRefetch: false }
+      )
+      void queryClient.refetchQueries(
+        { queryKey: TRACKED_LIST_QUERY_KEY },
         { cancelRefetch: false }
       )
       setFocusedIndex(0)
@@ -292,6 +432,28 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
   // does not yank items out from under the user mid-interaction.
   const displayItems = open && snapshotItems ? snapshotItems : unreadItems
 
+  // Mark lists of every server with a row, for chips and "Review later".
+  const rowServerIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const item of displayItems) ids.add(item.serverId ?? LOCAL_SERVER_ID)
+    for (const item of trackedItems) ids.add(item.serverId ?? LOCAL_SERVER_ID)
+    return [...ids].sort()
+  }, [displayItems, trackedItems])
+  const rowServerKey = rowServerIds.join('|')
+  // Same ids → same array, so the definitions lookup stays stable.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const stableRowServerIds = useMemo(() => rowServerIds, [rowServerKey])
+  const definitionsFor = useMarkDefinitionsByServer(stableRowServerIds)
+
+  /** The "Review later" mark of an item's server, when that server supports it. */
+  const reviewLaterMarkFor = useCallback(
+    (serverId: string | undefined) =>
+      marksLevel(serverId ?? LOCAL_SERVER_ID) >= TRACKED_MARKS_LEVEL
+        ? firstTrackedDefinition(definitionsFor(serverId))
+        : undefined,
+    [definitionsFor, marksLevel]
+  )
+
   const markSessionsReadOptimistically = useCallback(
     (sessionIds: string[]) => {
       const now = Math.floor(Date.now() / 1000)
@@ -302,14 +464,19 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
         if (!data.entries) return old
         return {
           ...data,
-          entries: data.entries.map(entry => ({
-            ...entry,
-            sessions: (entry.sessions ?? []).map(session =>
-              sessionIdSet.has(session.id)
-                ? { ...session, last_opened_at: now }
-                : session
-            ),
-          })),
+          // Tracked entries have no `sessions` list; leave them as they are.
+          entries: data.entries.map(entry =>
+            entry.sessions
+              ? {
+                  ...entry,
+                  sessions: entry.sessions.map(session =>
+                    sessionIdSet.has(session.id)
+                      ? { ...session, last_opened_at: now }
+                      : session
+                  ),
+                }
+              : entry
+          ),
         }
       })
     },
@@ -341,12 +508,9 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
         }
         await Promise.all(
           [...groups].map(async ([serverId, serverItems]) => {
-            const resourceIds = serverItems.map(item => {
-              const parsed = parseServerResourceKey(item.session.id)
-              return parsed?.serverId === serverId
-                ? parsed.resourceId
-                : item.session.id
-            })
+            const resourceIds = serverItems.map(item =>
+              resourceIdOn(serverId, item.session.id)
+            )
             const command =
               resourceIds.length === 1
                 ? 'set_session_last_opened'
@@ -355,11 +519,7 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
               resourceIds.length === 1
                 ? { sessionId: resourceIds[0] }
                 : { sessionIds: resourceIds }
-            if (serverId) {
-              await invokeForServer(serverId, command, args)
-            } else {
-              await invoke(command, args)
-            }
+            await invokeOnServer(serverId || undefined, command, args)
           })
         )
       } catch {
@@ -394,8 +554,43 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
     [displayItems.length, markSessionsOpened]
   )
 
+  /** Add the first tracked mark ("Review later") and mark the session read. */
+  const handleReviewLater = useCallback(
+    async (item: UnreadItem) => {
+      const mark = reviewLaterMarkFor(item.serverId)
+      if (!mark) return
+      const chat = useChatStore.getState()
+      const current =
+        chat.sessionLabels[item.session.id] ?? getSessionLabels(item.session)
+      const key = mark.name.toLowerCase()
+      if (!current.some(label => label.name.toLowerCase() === key)) {
+        const next: LabelData[] = [
+          ...current,
+          { name: mark.name, color: mark.color },
+        ]
+        try {
+          await invokeOnServer(item.serverId, 'update_session_state', {
+            worktreeId: resourceIdOn(item.serverId, item.worktreeId),
+            worktreePath: item.worktreePath,
+            sessionId: resourceIdOn(item.serverId, item.session.id),
+            labels: next,
+          })
+        } catch (error) {
+          toast.error(`Failed to add ${mark.name}: ${error}`)
+          return
+        }
+        if (chat.sessionWorktreeMap[item.session.id]) {
+          chat.setSessionLabels(item.session.id, next)
+        }
+      }
+      await handleMarkOneRead(item)
+    },
+    [handleMarkOneRead, reviewLaterMarkFor]
+  )
+
   const handleSelect = useCallback(
-    (item: UnreadItem) => {
+    (item: UnreadItem, options: { markRead?: boolean } = {}) => {
+      const { markRead = true } = options
       const { selectedProjectId, selectProject } = useProjectsStore.getState()
       const { setActiveSession, clearActiveWorktree, setLastOpenedForProject } =
         useChatStore.getState()
@@ -420,16 +615,100 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
 
       // Mark read AFTER auto-open is queued so unreadCount->0 unmount can't race
       // the modal-open path. Bell popover closes via the unreadCount===0 check.
-      void markSessionsOpened([item])
+      if (markRead) void markSessionsOpened([item])
       setOpen(false)
     },
     [markSessionsOpened]
   )
 
+  /** Open a tracked worktree on the project canvas. */
+  const handleSelectWorktree = useCallback((item: TrackedItemEntry) => {
+    const { selectedProjectId, selectProject, selectWorktree } =
+      useProjectsStore.getState()
+    if (selectedProjectId !== item.project_id) selectProject(item.project_id)
+    useChatStore.getState().clearActiveWorktree()
+    selectWorktree(item.worktree_id)
+    const ui = useUIStore.getState()
+    ui.markWorktreeForAutoOpenSession(item.worktree_id)
+    ui.setRailSection('workspace')
+    setOpen(false)
+  }, [])
+
+  const handleSelectTracked = useCallback(
+    (item: TrackedItemEntry) => {
+      if (item.session) {
+        handleSelect(sessionItemOf(item, item.session), { markRead: false })
+      } else {
+        handleSelectWorktree(item)
+      }
+    },
+    [handleSelect, handleSelectWorktree]
+  )
+
+  /** Done: clear the tracked marks of one item (untracked marks stay). */
+  const handleDone = useCallback(
+    async (item: TrackedItemEntry) => {
+      const key = trackedItemKey(item)
+      queryClient.setQueriesData<TrackedItemsResponse>(
+        { queryKey: TRACKED_LIST_QUERY_KEY },
+        old =>
+          old
+            ? {
+                ...old,
+                entries: old.entries.filter(
+                  entry => trackedItemKey(entry) !== key
+                ),
+              }
+            : old
+      )
+      setFocusedIndex(i => {
+        const newTotal = trackedItems.length - 1
+        if (newTotal <= 0) return -1
+        return Math.min(i, newTotal - 1)
+      })
+      try {
+        const kept = await invokeOnServer<LabelData[]>(
+          item.serverId,
+          'clear_tracked_marks',
+          {
+            worktreeId: resourceIdOn(item.serverId, item.worktree_id),
+            worktreePath: item.worktree_path,
+            sessionId: item.session
+              ? resourceIdOn(item.serverId, item.session.id)
+              : undefined,
+          }
+        )
+        const chat = useChatStore.getState()
+        if (item.session && chat.sessionWorktreeMap[item.session.id]) {
+          chat.setSessionLabels(item.session.id, kept ?? [])
+        }
+        queryClient.invalidateQueries({ queryKey: ['all-sessions'] })
+      } catch (error) {
+        toast.error(`Failed to clear marks: ${error}`)
+        void queryClient.refetchQueries({ queryKey: TRACKED_LIST_QUERY_KEY })
+      }
+    },
+    [queryClient, trackedItems.length]
+  )
+
+  const handleTabChange = useCallback((next: BellTab) => {
+    setTab(next)
+    setFocusedIndex(0)
+  }, [])
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      const total = displayItems.length
+      const total =
+        activeTab === 'unread' ? displayItems.length : trackedItems.length
       if (!total) return
+      const unreadItem =
+        activeTab === 'unread' && focusedIndex >= 0
+          ? displayItems[focusedIndex]
+          : undefined
+      const trackedItem =
+        activeTab === 'tracked' && focusedIndex >= 0
+          ? trackedItems[focusedIndex]
+          : undefined
 
       switch (e.key) {
         case 'ArrowDown':
@@ -442,26 +721,40 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
           break
         case 'Enter':
           e.preventDefault()
-          if (focusedIndex >= 0 && displayItems[focusedIndex]) {
-            handleSelect(displayItems[focusedIndex])
-          }
+          if (unreadItem) handleSelect(unreadItem)
+          if (trackedItem) handleSelectTracked(trackedItem)
           break
         case 'Backspace':
         case 'r':
         case 'R':
-          if (!showDesktopKeyboardAffordances) break
+          if (!showDesktopKeyboardAffordances || !unreadItem) break
           e.preventDefault()
-          if (focusedIndex >= 0 && displayItems[focusedIndex]) {
-            handleMarkOneRead(displayItems[focusedIndex])
-          }
+          handleMarkOneRead(unreadItem)
+          break
+        case 'l':
+        case 'L':
+          if (!showDesktopKeyboardAffordances || !unreadItem) break
+          e.preventDefault()
+          void handleReviewLater(unreadItem)
+          break
+        case 'd':
+        case 'D':
+          if (!showDesktopKeyboardAffordances || !trackedItem) break
+          e.preventDefault()
+          void handleDone(trackedItem)
           break
       }
     },
     [
+      activeTab,
       displayItems,
+      trackedItems,
       focusedIndex,
       handleSelect,
+      handleSelectTracked,
       handleMarkOneRead,
+      handleReviewLater,
+      handleDone,
       showDesktopKeyboardAffordances,
     ]
   )
@@ -474,10 +767,10 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
       ?.scrollIntoView({ block: 'nearest' })
   }, [focusedIndex])
 
-  // No unread → show normal title (or nothing if hideTitle).
+  // Nothing unread or tracked → show normal title (or nothing if hideTitle).
   // Keep trigger mounted while popover is open so a queued prompt restarting a
   // session mid-interaction can't yank the trigger out and detach the popover.
-  if (unreadCount === 0 && !open) {
+  if (unreadCount === 0 && trackedCount === 0 && !open) {
     if (hideTitle) return null
     return (
       <span className="block truncate text-sm font-medium text-foreground/80">
@@ -491,10 +784,27 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
   // a status flip, until the user dismisses).
   const displayCount =
     open && snapshotItems ? snapshotItems.length : unreadCount
-  const triggerLabel = `${displayCount} finished ${displayCount === 1 ? 'session' : 'sessions'}`
+  const triggerLabel =
+    [
+      displayCount > 0 &&
+        (trackedCount > 0
+          ? `${displayCount} finished`
+          : `${displayCount} finished ${displayCount === 1 ? 'session' : 'sessions'}`),
+      trackedCount > 0 && `${trackedCount} tracked`,
+    ]
+      .filter(Boolean)
+      .join(' · ') || 'No finished sessions'
+
+  const hint = (focused: boolean, key: string, label: string) =>
+    showDesktopKeyboardAffordances &&
+    focused && (
+      <Kbd title={label} className="-my-1">
+        {key}
+      </Kbd>
+    )
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <div>
           <Tooltip>
@@ -502,16 +812,29 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
               <button
                 type="button"
                 aria-label={triggerLabel}
-                className="relative z-[1] flex items-center gap-1 truncate rounded-md bg-background px-1.5 text-sm font-medium text-warning cursor-pointer"
+                className={cn(
+                  'relative z-[1] flex items-center gap-1 truncate rounded-md bg-background px-1.5 text-sm font-medium cursor-pointer',
+                  displayCount > 0 ? 'text-warning' : 'text-muted-foreground'
+                )}
               >
-                <BellDot
-                  className={cn(
-                    'h-3.5 w-3.5 shrink-0',
-                    animationEnabled &&
-                      'animate-[bell-ring_2s_ease-in-out_infinite]'
-                  )}
-                />
-                {displayCount}
+                {displayCount > 0 && (
+                  <>
+                    <BellDot
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        animationEnabled &&
+                          'animate-[bell-ring_2s_ease-in-out_infinite]'
+                      )}
+                    />
+                    {displayCount}
+                  </>
+                )}
+                {trackedCount > 0 && (
+                  <span className="flex items-center gap-0.5 text-muted-foreground">
+                    <Bookmark className="h-3.5 w-3.5 shrink-0" />
+                    {trackedCount}
+                  </span>
+                )}
                 {showDesktopKeyboardAffordances && (
                   <Kbd modHint className="ml-1">
                     {formatShortcutDisplay('mod+shift+f')}
@@ -530,9 +853,7 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
         collisionPadding={16}
         className={cn(
           'p-0',
-          isMobile
-            ? 'w-[calc(100vw-2rem)]'
-            : 'w-[min(440px,calc(100vw-2rem))]'
+          isMobile ? 'w-[calc(100vw-2rem)]' : 'w-[min(440px,calc(100vw-2rem))]'
         )}
         tabIndex={-1}
         onKeyDown={handleKeyDown}
@@ -541,21 +862,107 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
           contentRef.current?.focus()
         }}
       >
-        {/* Mark all read */}
-        {displayItems.length > 0 && (
-          <div className="flex items-center justify-end px-3 py-1.5 border-b">
-            <button
-              type="button"
-              onClick={handleMarkAllRead}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-            >
-              Mark all read
-            </button>
+        {(trackedSupported ||
+          (activeTab === 'unread' && displayItems.length > 0)) && (
+          <div className="flex items-center gap-2 px-2 py-1.5 border-b">
+            {trackedSupported && (
+              <SegmentedControl
+                value={activeTab}
+                onChange={handleTabChange}
+                segments={[
+                  {
+                    value: 'unread',
+                    label: `Unread (${displayItems.length})`,
+                    icon: BellDot,
+                  },
+                  {
+                    value: 'tracked',
+                    label: `Tracked (${trackedCount})`,
+                    icon: Bookmark,
+                  },
+                ]}
+              />
+            )}
+            {/* Mark all read */}
+            {activeTab === 'unread' && displayItems.length > 0 && (
+              <button
+                type="button"
+                onClick={handleMarkAllRead}
+                className="ml-auto text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              >
+                Mark all read
+              </button>
+            )}
           </div>
         )}
 
-        {isLoading ||
-        (isFetching && snapshotItems === null && unreadItems.length === 0) ? (
+        {activeTab === 'tracked' ? (
+          trackedItems.length === 0 ? (
+            <div className="text-center py-6 text-muted-foreground text-xs">
+              No tracked items
+            </div>
+          ) : (
+            <div className="max-h-[min(400px,60vh)] overflow-y-auto p-1">
+              {trackedItems.map((item, idx) => {
+                const focused = focusedIndex === idx
+                return (
+                  <div
+                    key={trackedItemKey(item)}
+                    data-unread-index={idx}
+                    onMouseEnter={() => setFocusedIndex(idx)}
+                    className={cn(
+                      'group flex items-start gap-1 rounded-md transition-colors',
+                      focused && 'bg-accent'
+                    )}
+                  >
+                    <div
+                      role="button"
+                      tabIndex={-1}
+                      onClick={() => handleSelectTracked(item)}
+                      className="flex min-w-0 flex-1 items-start gap-2 px-2 py-1.5 text-left cursor-pointer"
+                    >
+                      {item.session ? (
+                        <Bookmark className="h-3.5 w-3.5 shrink-0 mt-0.5 text-muted-foreground" />
+                      ) : (
+                        <GitBranch className="h-3.5 w-3.5 shrink-0 mt-0.5 text-muted-foreground" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <RowContext
+                            projectName={item.project_name}
+                            worktreeName={item.worktree_name}
+                            serverName={item.serverName}
+                          />
+                          <span className="ml-auto shrink-0">
+                            {hint(focused, 'D', 'Press D for Done')}
+                          </span>
+                        </div>
+                        <span className="flex items-center gap-1.5 text-[13px]">
+                          <span className="truncate">
+                            {item.session?.name ?? item.worktree_name}
+                          </span>
+                          <SessionMarkChips
+                            labels={item.marks}
+                            definitions={definitionsFor(item.serverId)}
+                          />
+                        </span>
+                      </div>
+                    </div>
+                    <RowAction
+                      label="Done"
+                      onClick={() => void handleDone(item)}
+                      alwaysVisible={!showDesktopKeyboardAffordances || focused}
+                    >
+                      <CheckIcon className="h-3.5 w-3.5" />
+                      Done
+                    </RowAction>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        ) : isLoading ||
+          (isFetching && snapshotItems === null && unreadItems.length === 0) ? (
           <div className="flex items-center justify-center py-6">
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           </div>
@@ -571,50 +978,64 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
                 sendingSessionIds[item.session.id] ?? false
               )
               const StatusIcon = status?.icon ?? CheckCircle2
+              const focused = focusedIndex === idx
+              const reviewLaterMark = reviewLaterMarkFor(item.serverId)
 
               return (
-                <button
+                <div
                   key={item.session.id}
-                  type="button"
                   data-unread-index={idx}
-                  onClick={() => handleSelect(item)}
                   onMouseEnter={() => setFocusedIndex(idx)}
                   className={cn(
-                    'w-full text-left px-2 py-1.5 rounded-md transition-colors cursor-pointer flex items-start gap-2',
-                    focusedIndex === idx && 'bg-accent'
+                    'group flex items-start gap-1 rounded-md transition-colors',
+                    focused && 'bg-accent'
                   )}
                 >
-                  <StatusIcon
-                    className={cn(
-                      'h-3.5 w-3.5 shrink-0 mt-0.5',
-                      status?.className ?? 'text-muted-foreground'
-                    )}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-2xs font-medium uppercase tracking-wider text-muted-foreground/50 shrink-0">
-                        {item.projectName}
-                      </span>
-                      {item.serverName && (
-                        <span className="truncate text-2xs text-muted-foreground/50">
-                          · {item.serverName}
-                        </span>
+                  <div
+                    role="button"
+                    tabIndex={-1}
+                    onClick={() => handleSelect(item)}
+                    className="flex min-w-0 flex-1 items-start gap-2 px-2 py-1.5 text-left cursor-pointer"
+                  >
+                    <StatusIcon
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0 mt-0.5',
+                        status?.className ?? 'text-muted-foreground'
                       )}
-                      <span className="text-2xs text-muted-foreground/40 shrink-0 ml-auto">
-                        {formatRelativeTime(item.session.updated_at)}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <RowContext
+                          projectName={item.projectName}
+                          worktreeName={item.worktreeName}
+                          serverName={item.serverName}
+                        />
+                        <span className="text-2xs text-muted-foreground/40 shrink-0 ml-auto">
+                          {formatRelativeTime(item.session.updated_at)}
+                        </span>
+                        {hint(focused, 'R', 'Press R to mark read')}
+                        {reviewLaterMark &&
+                          hint(
+                            focused,
+                            'L',
+                            `Press L for ${reviewLaterMark.name}`
+                          )}
+                      </div>
+                      <span className="text-[13px] truncate block">
+                        {item.session.name}
                       </span>
-                      {showDesktopKeyboardAffordances &&
-                        focusedIndex === idx && (
-                          <Kbd title="Press R to mark read" className="-my-1">
-                            R
-                          </Kbd>
-                        )}
                     </div>
-                    <span className="text-[13px] truncate block">
-                      {item.session.name}
-                    </span>
                   </div>
-                </button>
+                  {reviewLaterMark && (
+                    <RowAction
+                      label={reviewLaterMark.name}
+                      onClick={() => void handleReviewLater(item)}
+                      alwaysVisible={!showDesktopKeyboardAffordances || focused}
+                    >
+                      <BookmarkPlus className="h-3.5 w-3.5" />
+                    </RowAction>
+                  )}
+                </div>
               )
             })}
           </div>

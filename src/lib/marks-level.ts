@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { isLocalBackend } from '@/lib/environment'
 import { queryClient } from '@/lib/query-client'
 import {
@@ -13,7 +14,7 @@ import type { ServerCapabilitiesEnvelope } from '@/types/server-capabilities'
 import { LOCAL_SERVER_ID } from '@/types/server-resource'
 
 /** Marks support level of this client build. The local core always matches it. */
-export const CLIENT_MARKS_LEVEL = 3
+export const CLIENT_MARKS_LEVEL = 4
 
 export interface MarksLevelInput {
   /** Owning server of the resource; `undefined` or `local` means the current transport. */
@@ -42,16 +43,26 @@ export function getMarksLevel({
 
 /** Marks level of the server that owns a resource (current transport when no id). */
 export function useServerMarksLevel(serverId?: string): number {
+  return useMarksLevelLookup()(serverId)
+}
+
+/** Marks level of any server, for views that list items of many servers. */
+export function useMarksLevelLookup(): (serverId?: string) => number {
   const { data } = useServerCapabilities()
   const snapshots = useServerConnectionSnapshots()
-  return getMarksLevel({
-    serverId,
-    isLocalBackend: isLocalBackend(),
-    transportCapabilities: data?.capabilities,
-    remoteCapabilities: serverId
-      ? snapshots.get(serverId)?.capabilities
-      : undefined,
-  })
+  const transportCapabilities = data?.capabilities
+  return useCallback(
+    (serverId?: string) =>
+      getMarksLevel({
+        serverId,
+        isLocalBackend: isLocalBackend(),
+        transportCapabilities,
+        remoteCapabilities: serverId
+          ? snapshots.get(serverId)?.capabilities
+          : undefined,
+      }),
+    [snapshots, transportCapabilities]
+  )
 }
 
 /** Owning server of a resource key: the scope of `server:id`, else the current transport. */

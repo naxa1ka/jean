@@ -13422,4 +13422,66 @@ plugin:tools:search: npx -y search-mcp - ✘ Failed to connect";
         let metadata = crate::chat::storage::load_metadata(&app, &session_id).unwrap();
         assert!(metadata.and_then(|m| m.opencode_session_id).is_none());
     }
+
+    #[test]
+    fn tracked_marks_survive_run_completion() {
+        use super::super::types::{LabelData, SessionIndexEntry, SessionMetadata};
+        let temp = tempfile::tempdir().unwrap();
+        let app = AppHandle::new(temp.path().to_path_buf(), temp.path().to_path_buf()).unwrap();
+        let labels = vec![LabelData {
+            name: "Review later".to_string(),
+            color: "#3b82f6".to_string(),
+            pinned: false,
+            added_at: Some(7),
+        }];
+        let mut metadata = SessionMetadata::new(
+            "tracked".to_string(),
+            "wt".to_string(),
+            "Session".to_string(),
+            0,
+        );
+        metadata.labels = labels.clone();
+        save_metadata(&app, &metadata).unwrap();
+        with_index_mut(&app, "wt", |index| {
+            index.sessions.push(SessionIndexEntry {
+                label_names: Some(vec!["review later".to_string()]),
+                ..metadata.to_index_entry()
+            });
+            Ok(())
+        })
+        .unwrap();
+
+        // The same writes as the end of a run in `send_chat_message`.
+        let mut writer = run_log::start_run(
+            &app,
+            "tracked",
+            "wt",
+            "Session",
+            0,
+            "user-1",
+            "hi",
+            None,
+            Some("build"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        writer.complete("asst-1", None, None).unwrap();
+        with_sessions_mut(&app, "", "wt", |sessions| {
+            let session = sessions.find_session_mut("tracked").unwrap();
+            apply_non_waiting_completion_state(session);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            load_metadata(&app, "tracked").unwrap().unwrap().labels,
+            labels
+        );
+        let index = load_index(&app, "wt").unwrap();
+        let entry = index.sessions.iter().find(|e| e.id == "tracked").unwrap();
+        assert_eq!(entry.label_names, Some(vec!["review later".to_string()]));
+    }
 }

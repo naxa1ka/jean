@@ -327,6 +327,39 @@ describe('server command routing', () => {
     }
   })
 
+  it('scopes remote tracked items', () => {
+    expect(
+      decorateServerResult('r1', 'list_tracked_items', {
+        entries: [
+          {
+            kind: 'session',
+            project_id: 'p1',
+            worktree_id: 'w1',
+            session: { id: 's1', worktree_id: 'w1' },
+            marks: [],
+          },
+          { kind: 'worktree', project_id: 'p1', worktree_id: 'w2', marks: [] },
+        ],
+      })
+    ).toEqual({
+      entries: [
+        expect.objectContaining({
+          project_id: 'r1:p1',
+          worktree_id: 'r1:w1',
+          session: expect.objectContaining({
+            id: 'r1:s1',
+            worktree_id: 'r1:w1',
+          }),
+        }),
+        expect.objectContaining({
+          project_id: 'r1:p1',
+          worktree_id: 'r1:w2',
+          session: undefined,
+        }),
+      ],
+    })
+  })
+
   it('decorates a moved remote project', () => {
     expect(
       decorateServerResult('remote', 'move_item', {

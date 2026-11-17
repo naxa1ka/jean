@@ -1976,6 +1976,31 @@ export interface AllSessionsResponse {
   entries: AllSessionsEntry[]
 }
 
+/** A session or worktree with tracked marks (bell "Tracked" tab). */
+export interface TrackedItemEntry {
+  kind: 'session' | 'worktree'
+  project_id: string
+  project_name: string
+  worktree_id: string
+  worktree_name: string
+  worktree_path: string
+  /** Set when `kind === 'session'`. */
+  session?: Session
+  /** Only the tracked marks of the item. */
+  marks: LabelData[]
+  /** Newest `added_at` (ms) of `marks`. */
+  added_at?: number
+  /** Owning Jean instance. Present on native multi-server results. */
+  serverId?: string
+  /** Display name of the owning Jean instance. */
+  serverName?: string
+}
+
+/** Response from `list_tracked_items`. */
+export interface TrackedItemsResponse {
+  entries: TrackedItemEntry[]
+}
+
 export interface SessionSearchHit {
   session_id: string
   session_name: string
