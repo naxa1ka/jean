@@ -123,6 +123,145 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+// ============================================================================
+// Mark List (one managed list per server, stored in AppPreferences)
+// ============================================================================
+
+/// Maximum number of entries in the server mark list (strict validation only).
+pub const MAX_MARK_DEFINITIONS: usize = 200;
+/// Maximum length (in bytes) of a mark icon, e.g. one emoji.
+pub const MAX_MARK_ICON_BYTES: usize = 16;
+
+/// One entry of the server mark list. The list order is the display order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkDefinition {
+    pub name: String,
+    pub color: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Tracked marks get extra UI (e.g. a counter). Set by the user.
+    #[serde(default)]
+    pub tracked: bool,
+}
+
+/// Seed list for new servers and for preference files from before the mark list.
+pub fn default_mark_definitions() -> Vec<MarkDefinition> {
+    vec![
+        MarkDefinition {
+            name: "Review later".to_string(),
+            color: "#3b82f6".to_string(),
+            icon: Some("🔖".to_string()),
+            tracked: true,
+        },
+        MarkDefinition {
+            name: "Needs testing".to_string(),
+            color: DEFAULT_LABEL_COLOR.to_string(),
+            icon: None,
+            tracked: false,
+        },
+    ]
+}
+
+fn trimmed_icon(icon: Option<String>) -> Option<String> {
+    icon.map(|icon| icon.trim().to_string())
+        .filter(|icon| !icon.is_empty())
+}
+
+/// Strict validation for a full list from the user (`set_mark_definitions`).
+pub fn validate_mark_definitions(
+    definitions: Vec<MarkDefinition>,
+) -> Result<Vec<MarkDefinition>, String> {
+    if definitions.len() > MAX_MARK_DEFINITIONS {
+        return Err(format!(
+            "The mark list can have at most {MAX_MARK_DEFINITIONS} marks"
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut next = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        let name = definition.name.trim().to_string();
+        let name_chars = name.chars().count();
+        if name_chars == 0 || name_chars > MAX_LABEL_NAME_CHARS {
+            return Err(format!(
+                "Mark name must be 1 to {MAX_LABEL_NAME_CHARS} characters"
+            ));
+        }
+        if !seen.insert(name.to_lowercase()) {
+            return Err(format!("Mark '{name}' is in the list more than once"));
+        }
+        let color = definition.color.trim().to_string();
+        if !is_valid_label_color(&color) {
+            return Err(format!(
+                "Mark color must be a hex color like #eab308, got '{color}'"
+            ));
+        }
+        let icon = trimmed_icon(definition.icon);
+        if icon
+            .as_ref()
+            .is_some_and(|icon| icon.len() > MAX_MARK_ICON_BYTES)
+        {
+            return Err(format!(
+                "Mark icon must be at most {MAX_MARK_ICON_BYTES} bytes"
+            ));
+        }
+        next.push(MarkDefinition {
+            name,
+            color,
+            icon,
+            tracked: definition.tracked,
+        });
+    }
+    Ok(next)
+}
+
+/// Lenient cleanup for merge and migration input. It never drops a usable name:
+/// a long name is cut, a bad color becomes the default color, a bad icon is removed.
+/// Returns `None` only when the trimmed name is empty.
+pub fn sanitize_mark_definition(definition: MarkDefinition) -> Option<MarkDefinition> {
+    let name: String = definition
+        .name
+        .trim()
+        .chars()
+        .take(MAX_LABEL_NAME_CHARS)
+        .collect();
+    let name = name.trim_end().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let color = definition.color.trim().to_string();
+    let color = if is_valid_label_color(&color) {
+        color
+    } else {
+        DEFAULT_LABEL_COLOR.to_string()
+    };
+    let icon = trimmed_icon(definition.icon).filter(|icon| icon.len() <= MAX_MARK_ICON_BYTES);
+    Some(MarkDefinition {
+        name,
+        color,
+        icon,
+        tracked: definition.tracked,
+    })
+}
+
+/// Union by name (case-insensitive). Existing entries keep their place and values;
+/// new names are sanitized and appended in input order. Returns true when the list changed.
+pub fn merge_mark_definitions_into(
+    existing: &mut Vec<MarkDefinition>,
+    incoming: Vec<MarkDefinition>,
+) -> bool {
+    let mut seen: std::collections::HashSet<String> = existing
+        .iter()
+        .map(|definition| definition.name.to_lowercase())
+        .collect();
+    let before = existing.len();
+    for definition in incoming.into_iter().filter_map(sanitize_mark_definition) {
+        if seen.insert(definition.name.to_lowercase()) {
+            existing.push(definition);
+        }
+    }
+    existing.len() != before
+}
+
 /// Deserializes label from either a plain string (old format) or a LabelData object (new format).
 fn deserialize_label_compat<'de, D>(deserializer: D) -> Result<Option<LabelData>, D::Error>
 where
@@ -4132,6 +4271,96 @@ mod tests {
         });
 
         assert_eq!(metadata.latest_claude_session_id(), Some("claude-sess-abc"));
+    }
+}
+
+#[cfg(test)]
+mod mark_definition_tests {
+    use super::*;
+
+    fn def(name: &str, color: &str, icon: Option<&str>, tracked: bool) -> MarkDefinition {
+        MarkDefinition {
+            name: name.to_string(),
+            color: color.to_string(),
+            icon: icon.map(str::to_string),
+            tracked,
+        }
+    }
+
+    fn names(list: &[MarkDefinition]) -> Vec<&str> {
+        list.iter().map(|d| d.name.as_str()).collect()
+    }
+
+    #[test]
+    fn mark_definitions_strict_validation_accepts_and_trims() {
+        let list = validate_mark_definitions(vec![
+            def("  Bug ", " #ff0000 ", Some("  "), true),
+            def("Later", "#abc", Some(" 🔖 "), false),
+        ])
+        .unwrap();
+        assert_eq!(list[0], def("Bug", "#ff0000", None, true));
+        assert_eq!(list[1], def("Later", "#abc", Some("🔖"), false));
+    }
+
+    #[test]
+    fn mark_definitions_strict_validation_rejects_bad_input() {
+        let long = "x".repeat(MAX_LABEL_NAME_CHARS + 1);
+        let long_icon = "🔖".repeat(5); // 20 bytes
+        for bad in [
+            vec![def("  ", "#fff", None, false)],
+            vec![def(&long, "#fff", None, false)],
+            vec![def("A", "#fff", None, false), def("a", "#000", None, false)],
+            vec![def("A", "red", None, false)],
+            vec![def("A", "#fff", Some(&long_icon), false)],
+        ] {
+            assert!(validate_mark_definitions(bad.clone()).is_err(), "{bad:?}");
+        }
+        let too_many: Vec<_> = (0..=MAX_MARK_DEFINITIONS)
+            .map(|i| def(&format!("m{i}"), "#fff", None, false))
+            .collect();
+        assert!(validate_mark_definitions(too_many).is_err());
+        let max_name = "y".repeat(MAX_LABEL_NAME_CHARS);
+        assert!(validate_mark_definitions(vec![def(&max_name, "#fff", None, false)]).is_ok());
+    }
+
+    #[test]
+    fn mark_definitions_sanitize_fixes_instead_of_dropping() {
+        let long = format!("{}tail", "z".repeat(MAX_LABEL_NAME_CHARS));
+        let long_icon = "🔖".repeat(5);
+        let clean =
+            sanitize_mark_definition(def(&long, "not-a-color", Some(&long_icon), true)).unwrap();
+        assert_eq!(clean.name.chars().count(), MAX_LABEL_NAME_CHARS);
+        assert_eq!(clean.color, DEFAULT_LABEL_COLOR);
+        assert_eq!(clean.icon, None);
+        assert!(clean.tracked);
+        assert!(sanitize_mark_definition(def("   ", "#fff", None, false)).is_none());
+    }
+
+    #[test]
+    fn mark_definitions_merge_union_keeps_order_and_existing_values() {
+        let mut list = default_mark_definitions();
+        let changed = merge_mark_definitions_into(
+            &mut list,
+            vec![
+                def("needs TESTING", "#000000", Some("x"), true),
+                def("Bug", "#ff0000", None, false),
+                def("  ", "#ff0000", None, false),
+                def("bug", "#00ff00", None, false),
+                def("Docs", "bad", None, false),
+            ],
+        );
+        assert!(changed);
+        assert_eq!(
+            names(&list),
+            vec!["Review later", "Needs testing", "Bug", "Docs"]
+        );
+        assert_eq!(list[1], default_mark_definitions()[1]);
+        assert_eq!(list[2].color, "#ff0000");
+        assert_eq!(list[3].color, DEFAULT_LABEL_COLOR);
+        assert!(!merge_mark_definitions_into(
+            &mut list,
+            vec![def("docs", "#fff", None, false)]
+        ));
     }
 }
 

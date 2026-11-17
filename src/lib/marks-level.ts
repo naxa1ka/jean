@@ -13,7 +13,7 @@ import type { ServerCapabilitiesEnvelope } from '@/types/server-capabilities'
 import { LOCAL_SERVER_ID } from '@/types/server-resource'
 
 /** Marks support level of this client build. The local core always matches it. */
-export const CLIENT_MARKS_LEVEL = 1
+export const CLIENT_MARKS_LEVEL = 2
 
 export interface MarksLevelInput {
   /** Owning server of the resource; `undefined` or `local` means the current transport. */

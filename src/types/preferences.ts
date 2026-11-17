@@ -1495,7 +1495,28 @@ export interface AppPreferences {
    * every attached client — including remote sessions — uses this value.
    */
   browser_default_host?: string | null
+  /**
+   * Managed mark list of this server, shared by all projects. Order = display order.
+   * Missing on servers below marks level 2.
+   */
+  mark_definitions?: MarkDefinition[]
+  /** True after the server added all labels in use to `mark_definitions` (one time). */
+  marks_migrated?: boolean
 }
+
+/** One entry of a server's mark list (`AppPreferences.mark_definitions`). */
+export interface MarkDefinition {
+  name: string
+  color: string
+  icon: string | null
+  tracked: boolean
+}
+
+/** Seed mark list of a new server (matches Rust `default_mark_definitions`). */
+export const DEFAULT_MARK_DEFINITIONS: MarkDefinition[] = [
+  { name: 'Review later', color: '#3b82f6', icon: '🔖', tracked: true },
+  { name: 'Needs testing', color: '#eab308', icon: null, tracked: false },
+]
 
 export type TerminalBackgroundMode = 'auto' | 'light' | 'dark' | 'custom'
 
@@ -2918,4 +2939,6 @@ export const defaultPreferences: AppPreferences = {
   commandcode_max_turns: 30,
   agent_browser_enabled: true, // Default: on
   browser_default_host: null, // Unset: tabs and port buttons use localhost
+  mark_definitions: DEFAULT_MARK_DEFINITIONS,
+  marks_migrated: false,
 }

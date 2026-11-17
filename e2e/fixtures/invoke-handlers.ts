@@ -72,6 +72,8 @@ export const defaultResponses: Record<string, unknown> = {
   // Preferences
   load_preferences: mockPreferences,
   save_preferences: null,
+  set_mark_definitions: mockPreferences.mark_definitions,
+  merge_mark_definitions: mockPreferences.mark_definitions,
 
   // UI State
   get_native_client_id: '11111111-1111-4111-8111-111111111111',
