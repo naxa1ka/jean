@@ -546,10 +546,10 @@ describe('UnreadBell', () => {
 
     const firstRow = screen
       .getByText('Session one')
-      .closest('[data-unread-index]')
+      .closest<HTMLElement>('[data-unread-index]')
     const secondRow = screen
       .getByText('Session two')
-      .closest('[data-unread-index]')
+      .closest<HTMLElement>('[data-unread-index]')
 
     if (!firstRow || !secondRow) {
       throw new Error('Expected both unread session rows to render')
@@ -609,7 +609,7 @@ describe('UnreadBell', () => {
 
     const firstRow = screen
       .getByText('Session one')
-      .closest('[data-unread-index]')
+      .closest<HTMLElement>('[data-unread-index]')
     if (!firstRow) throw new Error('Expected first unread session row')
     expect(within(firstRow).queryByText('R')).not.toBeInTheDocument()
 
@@ -632,7 +632,7 @@ describe('UnreadBell', () => {
 
     const firstRow = screen
       .getByText('Session one')
-      .closest('[data-unread-index]')
+      .closest<HTMLElement>('[data-unread-index]')
     if (!firstRow) throw new Error('Expected first unread session row')
     expect(within(firstRow).queryByText('R')).not.toBeInTheDocument()
 
@@ -662,7 +662,6 @@ describe('UnreadBell', () => {
         session: session({
           id: 'tracked-1',
           name: 'Tracked session',
-          worktree_id: 'worktree-9',
         }),
         marks: [reviewLater],
         added_at: 5,

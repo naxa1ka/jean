@@ -8,15 +8,27 @@ import {
   Trash2,
 } from '@/components/icons/reicon'
 import {
+  ContextMenuCheckboxItem,
   ContextMenuItem,
   ContextMenuSeparator,
 } from '@/components/ui/context-menu'
 import { copyToClipboard } from '@/lib/clipboard'
+import {
+  TRACKED_MARKS_LEVEL,
+  toggleMark,
+  useMarkDefinitions,
+} from '@/lib/marks'
+import { getResourceServerId, useServerMarksLevel } from '@/lib/marks-level'
 import { canReconnectSession } from '@/services/chat'
-import type { Session } from '@/types/chat'
+import { useChatStore } from '@/store/chat-store'
+import type { LabelData, Session } from '@/types/chat'
+
+const NO_LABELS: LabelData[] = []
 
 interface SessionContextMenuItemsProps {
   session: Session
+  /** Worktree of the session; selects the server whose mark list applies. */
+  worktreeId: string
   resumeCommand: string | null
   nativeClientPending?: boolean
   onRename: () => void
@@ -32,6 +44,7 @@ interface SessionContextMenuItemsProps {
  */
 export function SessionContextMenuItems({
   session,
+  worktreeId,
   resumeCommand,
   nativeClientPending = false,
   onRename,
@@ -40,12 +53,41 @@ export function SessionContextMenuItems({
   onReconnect,
   onDelete,
 }: SessionContextMenuItemsProps) {
+  const serverId = getResourceServerId(worktreeId)
+  const marksLevel = useServerMarksLevel(serverId)
+  const definitions = useMarkDefinitions(serverId)
+  const labels = useChatStore(
+    state => state.sessionLabels[session.id] ?? NO_LABELS
+  )
+  const trackedDefinitions =
+    marksLevel >= TRACKED_MARKS_LEVEL
+      ? definitions.filter(definition => definition.tracked)
+      : []
+
   return (
     <>
       <ContextMenuItem onSelect={onRename}>
         <Pencil className="mr-2 h-4 w-4" />
         Rename
       </ContextMenuItem>
+      {trackedDefinitions.map(definition => (
+        <ContextMenuCheckboxItem
+          key={definition.name}
+          checked={labels.some(
+            label => label.name.toLowerCase() === definition.name.toLowerCase()
+          )}
+          onSelect={() => {
+            const { sessionLabels, setSessionLabels } = useChatStore.getState()
+            setSessionLabels(
+              session.id,
+              toggleMark(sessionLabels[session.id] ?? NO_LABELS, definition)
+            )
+          }}
+        >
+          {definition.icon && <span aria-hidden>{definition.icon}</span>}
+          {definition.name}
+        </ContextMenuCheckboxItem>
+      ))}
       <ContextMenuItem onSelect={onToggleLabel}>
         <Tag className="mr-2 h-4 w-4" />
         Marks…

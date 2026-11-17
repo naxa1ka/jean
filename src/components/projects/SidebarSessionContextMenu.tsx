@@ -53,6 +53,7 @@ function SidebarSessionContextMenuContent({
     <ContextMenuContent className="w-64">
       <SessionContextMenuItems
         session={session}
+        worktreeId={worktreeId}
         resumeCommand={resumeCommand}
         nativeClientPending={isPending}
         onRename={() => onRename(session)}

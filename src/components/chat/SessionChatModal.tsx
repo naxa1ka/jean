@@ -1211,6 +1211,7 @@ export const SessionChatModal = memo(function SessionChatModal({
   const renderSessionMenuItems = (session: Session) => (
     <SessionContextMenuItems
       session={session}
+      worktreeId={worktreeId}
       resumeCommand={getResumeCommand(session)}
       nativeClientPending={isOpeningInNativeClient}
       onRename={() => handleStartRename(session.id, session.name)}
