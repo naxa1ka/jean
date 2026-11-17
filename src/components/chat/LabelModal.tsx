@@ -1,4 +1,5 @@
-import { useState, useCallback, useMemo } from 'react'
+import { Fragment, useState, useCallback, useMemo } from 'react'
+import { toast } from 'sonner'
 import {
   Dialog,
   DialogContent,
@@ -12,26 +13,33 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { Tag, Check, Pencil, Pin, Trash2 } from '@/components/icons/reicon'
+import { Bookmark, Check, Pencil, Pin } from '@/components/icons/reicon'
 import { useChatStore } from '@/store/chat-store'
+import { useUIStore } from '@/store/ui-store'
 import type { LabelData } from '@/types/chat'
-import { getLabelTextColor } from '@/lib/label-colors'
+import { LOCAL_SERVER_ID } from '@/types/server-resource'
+import {
+  DEFAULT_MARK_COLOR,
+  LABEL_COLORS,
+  getLabelTextColor,
+} from '@/lib/label-colors'
 import { getResourceServerId, useServerMarksLevel } from '@/lib/marks-level'
+import {
+  MARK_LIST_LEVEL,
+  findDefinition,
+  useMarkDefinitions,
+} from '@/lib/marks'
+import { mergeMarkDefinitions } from '@/services/marks'
 
-const PRESET_LABELS = ['Needs testing']
+/** Built-in mark of servers without a mark list (marks level < 2). */
+const LEGACY_PRESET_LABEL = 'Needs testing'
 
-const LABEL_COLORS = [
-  { name: 'Blue', value: '#3b82f6' },
-  { name: 'Green', value: '#22c55e' },
-  { name: 'Yellow', value: '#eab308' },
-  { name: 'Orange', value: '#f97316' },
-  { name: 'Red', value: '#ef4444' },
-  { name: 'Purple', value: '#a855f7' },
-  { name: 'Pink', value: '#ec4899' },
-  { name: 'Gray', value: '#6b7280' },
-  { name: 'Cyan', value: '#06b6d4' },
-  { name: 'Lime', value: '#84cc16' },
-]
+interface PickerRow {
+  label: LabelData
+  icon: string | null
+  /** Applied, but the server mark list has no definition with this name. */
+  orphan: boolean
+}
 
 interface LabelModalProps {
   isOpen: boolean
@@ -44,17 +52,23 @@ interface LabelModalProps {
    * Sessions multi-select when their server supports `marks >= 1`, else single select.
    */
   target?: 'session' | 'worktree'
+  /**
+   * Server that owns the target. Sessions use the server of their worktree when
+   * this is not set. The picker shows the mark list of this server.
+   */
+  serverId?: string
   /** Custom apply handler. Default (sessions): `setSessionLabels` in the chat store. */
   onApplyLabels?: (labels: LabelData[]) => void
-  /** Additional labels to include in the custom labels list (e.g. worktree labels) */
+  /**
+   * More labels for the list. Servers with a mark list use them only for the
+   * pinned state; older servers also list them.
+   */
   extraLabels?: LabelData[]
-  /** Callback when a label's color is edited (e.g. to propagate to worktree labels) */
-  onColorChange?: (labelName: string, newColor: string) => void
   /** Callback when a label is pinned/unpinned as a project filter tab. */
   onPinnedChange?: (label: LabelData, pinned: boolean) => void
-  /** Callback when a custom label should be deleted from the project. */
-  onDeleteLabel?: (label: LabelData) => void
 }
+
+const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
 export function LabelModal({
   isOpen,
@@ -62,22 +76,15 @@ export function LabelModal({
   sessionId,
   currentLabels,
   target = 'session',
+  serverId,
   onApplyLabels,
   extraLabels,
-  onColorChange,
   onPinnedChange,
-  onDeleteLabel,
 }: LabelModalProps) {
   const [inputValue, setInputValue] = useState('')
-  const [selectedColor, setSelectedColor] = useState(
-    LABEL_COLORS[2]?.value ?? '#eab308'
-  )
+  const [selectedColor, setSelectedColor] = useState<string>(DEFAULT_MARK_COLOR)
   const [isCreatingCustom, setIsCreatingCustom] = useState(false)
-  const [editingLabelName, setEditingLabelName] = useState<string | null>(null)
   const [focusedIndex, setFocusedIndex] = useState(0)
-  const [colorOverrides, setColorOverrides] = useState<Record<string, string>>(
-    {}
-  )
 
   const sessionLabels = useChatStore(state => state.sessionLabels)
   const sessionWorktreeId = useChatStore(state =>
@@ -85,80 +92,14 @@ export function LabelModal({
       ? state.sessionWorktreeMap[sessionId]
       : undefined
   )
-  const sessionMarksLevel = useServerMarksLevel(
-    sessionWorktreeId ? getResourceServerId(sessionWorktreeId) : undefined
-  )
+  const ownerServerId =
+    serverId ??
+    (sessionWorktreeId ? getResourceServerId(sessionWorktreeId) : undefined)
+  const marksLevel = useServerMarksLevel(ownerServerId)
+  const definitions = useMarkDefinitions(ownerServerId)
+  const hasMarkList = marksLevel >= MARK_LIST_LEVEL
   const mode: 'single' | 'multi' =
-    target === 'worktree' || sessionMarksLevel >= 1 ? 'multi' : 'single'
-
-  // Every mark in use on any session (flattened from the per-session lists)
-  const labelsInUse = useMemo(
-    () => Object.values(sessionLabels).flat(),
-    [sessionLabels]
-  )
-
-  // Extract unique label names (from LabelData + extraLabels) for the dropdown list
-  const customLabels = useMemo(() => {
-    const presetSet = new Set(PRESET_LABELS)
-    const unique = new Set<string>()
-    for (const label of labelsInUse) {
-      if (!presetSet.has(label.name)) unique.add(label.name)
-    }
-    if (extraLabels) {
-      for (const label of extraLabels) {
-        if (!presetSet.has(label.name)) unique.add(label.name)
-      }
-    }
-    return [...unique].sort()
-  }, [labelsInUse, extraLabels])
-
-  const allLabelNames = useMemo(
-    () => [...PRESET_LABELS, ...customLabels],
-    [customLabels]
-  )
-
-  // Get the label data for current label (for preset labels, use default yellow)
-  const getLabelData = useCallback(
-    (name: string): LabelData => {
-      const selected = currentLabels.find(l => l.name === name)
-      // Check local color overrides first (instant feedback before async refetch)
-      if (colorOverrides[name]) {
-        return { ...(selected ?? { name }), color: colorOverrides[name] }
-      }
-      const extra = extraLabels?.find(l => l.name === name)
-      if (selected) {
-        return extra?.pinned ? { ...selected, pinned: true } : selected
-      }
-      // Check if this label name exists in sessionLabels or extraLabels (has a color)
-      const existing = labelsInUse.find(l => l.name === name)
-      if (existing) {
-        return extra?.pinned ? { ...existing, pinned: true } : existing
-      }
-      if (extra) return extra
-      // Preset labels get yellow by default
-      return { name, color: '#eab308' }
-    },
-    [labelsInUse, colorOverrides, extraLabels, currentLabels]
-  )
-
-  // Update all sessions that use a given label name to use a new color
-  const updateAllSessionsWithLabel = useCallback(
-    (labelName: string, newColor: string) => {
-      const { sessionLabels: allLabels, setSessionLabels } =
-        useChatStore.getState()
-      for (const [sid, labels] of Object.entries(allLabels)) {
-        if (labels.some(label => label.name === labelName)) {
-          setSessionLabels(
-            sid,
-            labels.map(label =>
-              label.name === labelName ? { ...label, color: newColor } : label
-            )
-          )
-        }
-      }
-    },
-    []
-  )
+    target === 'worktree' || marksLevel >= 1 ? 'multi' : 'single'
 
   // Single select (old servers) keeps only the first mark
   const selectedLabels = useMemo(
@@ -167,9 +108,58 @@ export function LabelModal({
   )
 
   const isLabelSelected = useCallback(
-    (name: string) => selectedLabels.some(label => label.name === name),
+    (name: string) => selectedLabels.some(label => sameName(label.name, name)),
     [selectedLabels]
   )
+
+  const isPinned = useCallback(
+    (name: string) =>
+      !!(
+        selectedLabels.find(label => sameName(label.name, name))?.pinned ||
+        extraLabels?.find(label => sameName(label.name, name))?.pinned
+      ),
+    [selectedLabels, extraLabels]
+  )
+
+  // Older servers: labels in use plus the built-in preset (no managed list)
+  const legacyRows = useMemo((): PickerRow[] => {
+    if (hasMarkList) return []
+    const labelsInUse = Object.values(sessionLabels).flat()
+    const names = new Set<string>()
+    for (const label of [...labelsInUse, ...(extraLabels ?? [])]) {
+      if (label.name !== LEGACY_PRESET_LABEL) names.add(label.name)
+    }
+    return [LEGACY_PRESET_LABEL, ...[...names].sort()].map(name => {
+      const label = selectedLabels.find(l => l.name === name) ??
+        labelsInUse.find(l => l.name === name) ??
+        extraLabels?.find(l => l.name === name) ?? {
+          name,
+          color: DEFAULT_MARK_COLOR,
+        }
+      return {
+        label: isPinned(name) ? { ...label, pinned: true } : label,
+        icon: null,
+        orphan: false,
+      }
+    })
+  }, [hasMarkList, sessionLabels, extraLabels, selectedLabels, isPinned])
+
+  const rows = useMemo((): PickerRow[] => {
+    if (!hasMarkList) return legacyRows
+    const listRows = definitions.map(definition => ({
+      label: {
+        name: definition.name,
+        color: definition.color,
+        ...(isPinned(definition.name) ? { pinned: true } : {}),
+      },
+      icon: definition.icon,
+      orphan: false,
+    }))
+    const orphanRows = selectedLabels
+      .filter(label => !findDefinition(label.name, definitions))
+      .map(label => ({ label, icon: null, orphan: true }))
+    return [...listRows, ...orphanRows]
+  }, [hasMarkList, legacyRows, definitions, selectedLabels, isPinned])
 
   const commitLabels = useCallback(
     (labels: LabelData[]) => {
@@ -189,7 +179,9 @@ export function LabelModal({
         commitLabels(
           labelData
             ? isLabelSelected(labelData.name)
-              ? selectedLabels.filter(label => label.name !== labelData.name)
+              ? selectedLabels.filter(
+                  label => !sameName(label.name, labelData.name)
+                )
               : [...selectedLabels, labelData]
             : []
         )
@@ -201,101 +193,70 @@ export function LabelModal({
     [mode, selectedLabels, isLabelSelected, commitLabels, onClose]
   )
 
-  // Start editing an existing label's color
-  const startEditColor = useCallback(
-    (labelData: LabelData, e: React.MouseEvent) => {
-      e.stopPropagation()
-      setEditingLabelName(labelData.name)
-      setSelectedColor(labelData.color)
-    },
-    []
-  )
+  const leaveCreate = useCallback(() => {
+    setIsCreatingCustom(false)
+    setInputValue('')
+  }, [])
 
-  // Save the edited color for a label
-  const saveEditedColor = useCallback(() => {
-    if (!editingLabelName) return
-    updateAllSessionsWithLabel(editingLabelName, selectedColor)
-    onColorChange?.(editingLabelName, selectedColor)
-    setColorOverrides(prev => ({ ...prev, [editingLabelName]: selectedColor }))
-    setEditingLabelName(null)
+  /** "New mark…": add it to the server list (when the server has one), then apply it. */
+  const handleCreateCustom = useCallback(async () => {
+    const trimmed = inputValue.trim()
+    if (!trimmed) return
+    let label: LabelData = { name: trimmed, color: selectedColor }
+    if (hasMarkList) {
+      const existing = findDefinition(trimmed, definitions)
+      if (existing) {
+        label = { name: existing.name, color: existing.color }
+      } else {
+        try {
+          await mergeMarkDefinitions(ownerServerId, [
+            { name: trimmed, color: selectedColor, icon: null, tracked: false },
+          ])
+        } catch (error) {
+          toast.error(`Failed to add mark: ${error}`)
+          return
+        }
+      }
+    }
+    leaveCreate()
+    if (isLabelSelected(label.name)) return
+    applyLabel(label)
   }, [
-    editingLabelName,
+    inputValue,
     selectedColor,
-    updateAllSessionsWithLabel,
-    onColorChange,
+    hasMarkList,
+    definitions,
+    ownerServerId,
+    leaveCreate,
+    isLabelSelected,
+    applyLabel,
   ])
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (isCreatingCustom || editingLabelName) {
-        // In custom creation or color edit mode, Enter saves the color
-        if (e.key === 'Enter') {
-          e.preventDefault()
-          if (editingLabelName) {
-            saveEditedColor()
-          } else {
-            const trimmed = inputValue.trim()
-            if (trimmed) {
-              applyLabel({ name: trimmed, color: selectedColor })
-            }
-          }
-        } else if (e.key === 'Escape') {
-          e.preventDefault()
-          setIsCreatingCustom(false)
-          setEditingLabelName(null)
-          setInputValue('')
-        }
-        return
-      }
-
-      // Normal navigation mode
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setFocusedIndex(i => (i + 1) % allLabelNames.length)
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setFocusedIndex(
-          i => (i - 1 + allLabelNames.length) % allLabelNames.length
-        )
-      } else if (e.key === 'Enter') {
-        e.preventDefault()
-        const labelName = allLabelNames[focusedIndex]
-        if (labelName) {
-          const isAlreadySelected = isLabelSelected(labelName)
-          applyLabel(
-            isAlreadySelected
-              ? getLabelData(labelName)
-              : getLabelData(labelName)
-          )
-        }
-      } else if (e.key === 'Backspace') {
-        const isInputFocused = (e.target as HTMLElement)?.tagName === 'INPUT'
-        if (!isInputFocused) {
-          e.preventDefault()
-          applyLabel(null)
-        }
+  const addOrphanToList = useCallback(
+    async (label: LabelData, e: React.MouseEvent) => {
+      e.stopPropagation()
+      try {
+        await mergeMarkDefinitions(ownerServerId, [
+          { name: label.name, color: label.color, icon: null, tracked: false },
+        ])
+      } catch (error) {
+        toast.error(`Failed to add mark to the list: ${error}`)
       }
     },
-    [
-      isCreatingCustom,
-      editingLabelName,
-      inputValue,
-      selectedColor,
-      allLabelNames,
-      focusedIndex,
-      isLabelSelected,
-      getLabelData,
-      applyLabel,
-      saveEditedColor,
-    ]
+    [ownerServerId]
   )
 
-  const handleCreateCustom = useCallback(() => {
-    const trimmed = inputValue.trim()
-    if (trimmed) {
-      applyLabel({ name: trimmed, color: selectedColor })
-    }
-  }, [inputValue, selectedColor, applyLabel])
+  /** The list is managed in Settings → Marks of the item's own server. */
+  const openMarkSettings = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation()
+      onClose()
+      useUIStore
+        .getState()
+        .openPreferencesPane('marks', ownerServerId ?? LOCAL_SERVER_ID)
+    },
+    [onClose, ownerServerId]
+  )
 
   const togglePinned = useCallback(
     (labelData: LabelData, e: React.MouseEvent) => {
@@ -308,7 +269,7 @@ export function LabelModal({
       }
 
       const next = selectedLabels.map(label =>
-        label.name === labelData.name
+        sameName(label.name, labelData.name)
           ? { ...label, pinned: !label.pinned }
           : label
       )
@@ -317,16 +278,111 @@ export function LabelModal({
     [target, commitLabels, onPinnedChange, selectedLabels]
   )
 
-  const deleteLabel = useCallback(
-    (labelData: LabelData, e: React.MouseEvent) => {
-      e.stopPropagation()
-      onDeleteLabel?.(labelData)
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (isCreatingCustom) {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          void handleCreateCustom()
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          leaveCreate()
+        }
+        return
+      }
+
+      if (rows.length > 0 && e.key === 'ArrowDown') {
+        e.preventDefault()
+        setFocusedIndex(i => (i + 1) % rows.length)
+      } else if (rows.length > 0 && e.key === 'ArrowUp') {
+        e.preventDefault()
+        setFocusedIndex(i => (i - 1 + rows.length) % rows.length)
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        const row = rows[focusedIndex]
+        if (row) applyLabel(row.label)
+      } else if (e.key === 'Backspace') {
+        const isInputFocused = (e.target as HTMLElement)?.tagName === 'INPUT'
+        if (!isInputFocused) {
+          e.preventDefault()
+          applyLabel(null)
+        }
+      }
     },
-    [onDeleteLabel]
+    [
+      isCreatingCustom,
+      rows,
+      focusedIndex,
+      applyLabel,
+      handleCreateCustom,
+      leaveCreate,
+    ]
   )
 
-  // Are we in edit mode?
-  const isEditing = isCreatingCustom || editingLabelName
+  const renderRow = (row: PickerRow, i: number) => {
+    const { label: labelData } = row
+    const isSelected = isLabelSelected(labelData.name)
+    return (
+      <button
+        type="button"
+        className={`flex items-center h-8 px-3 text-sm rounded-md text-left transition-colors group ${
+          focusedIndex === i
+            ? 'bg-accent text-accent-foreground'
+            : isSelected
+              ? 'bg-primary/10 text-primary'
+              : 'hover:bg-accent/50'
+        }`}
+        onClick={() =>
+          applyLabel(isSelected && mode === 'single' ? null : labelData)
+        }
+        onMouseEnter={() => setFocusedIndex(i)}
+        tabIndex={-1}
+      >
+        {row.icon ? (
+          <span className="w-4 mr-1.5 flex-shrink-0 text-center leading-none">
+            {row.icon}
+          </span>
+        ) : (
+          <span
+            className="w-3 h-3 rounded-full mr-2 flex-shrink-0"
+            style={{ backgroundColor: labelData.color }}
+          />
+        )}
+        <span className="flex-1 truncate">{labelData.name}</span>
+        {row.orphan && (
+          <span
+            role="button"
+            aria-label={`Add ${labelData.name} to list`}
+            className="mr-1 text-2xs text-muted-foreground hover:text-foreground"
+            onClick={e => void addOrphanToList(labelData, e)}
+          >
+            Add to list
+          </span>
+        )}
+        {target === 'worktree' && (
+          <Pin
+            className={`h-3 w-3 transition-opacity mr-1 ${
+              labelData.pinned
+                ? 'opacity-100'
+                : 'opacity-0 group-hover:opacity-50 hover:!opacity-100'
+            }`}
+            onClick={e => togglePinned(labelData, e)}
+          />
+        )}
+        {isSelected && <Check className="h-3 w-3 mr-1" />}
+        {hasMarkList && !row.orphan && (
+          <Pencil
+            role="button"
+            aria-label={`Edit ${labelData.name} in Settings`}
+            className="h-3 w-3 opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity mr-1"
+            onClick={openMarkSettings}
+          />
+        )}
+      </button>
+    )
+  }
+
+  const firstOrphanIndex = rows.findIndex(row => row.orphan)
 
   return (
     <Dialog open={isOpen} onOpenChange={open => !open && onClose()}>
@@ -339,23 +395,17 @@ export function LabelModal({
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Tag className="h-4 w-4" />
-            {target === 'worktree'
-              ? 'Worktree Labels'
-              : mode === 'multi'
-                ? 'Session Labels'
-                : 'Session Label'}
+            <Bookmark className="h-4 w-4" />
+            {target === 'worktree' ? 'Worktree marks' : 'Session marks'}
           </DialogTitle>
           <DialogDescription>
-            {editingLabelName
-              ? `Choose a color for "${editingLabelName}".`
-              : isCreatingCustom
-                ? 'Choose a color for your label.'
-                : 'Pick labels or create a custom one.'}
+            {isCreatingCustom
+              ? 'Choose a color for your mark.'
+              : 'Pick marks or create a new one.'}
           </DialogDescription>
         </DialogHeader>
 
-        {isEditing ? (
+        {isCreatingCustom ? (
           /* Color picker view */
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-3">
@@ -369,7 +419,7 @@ export function LabelModal({
                 Preview
               </span>
               <span className="text-sm text-muted-foreground">
-                {editingLabelName || inputValue.trim() || 'Label name'}
+                {inputValue.trim() || 'Mark name'}
               </span>
             </div>
 
@@ -404,91 +454,41 @@ export function LabelModal({
               <button
                 type="button"
                 className="flex-1 h-8 text-sm rounded-md border hover:bg-accent"
-                onClick={() => {
-                  setIsCreatingCustom(false)
-                  setEditingLabelName(null)
-                  setInputValue('')
-                }}
+                onClick={leaveCreate}
               >
                 Back
               </button>
               <button
                 type="button"
                 className="flex-1 h-8 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90"
-                onClick={
-                  editingLabelName ? saveEditedColor : handleCreateCustom
-                }
-                disabled={!editingLabelName && !inputValue.trim()}
+                onClick={() => void handleCreateCustom()}
+                disabled={!inputValue.trim()}
               >
-                {editingLabelName ? 'Save' : 'Create'}
+                Create
               </button>
             </div>
           </div>
         ) : (
-          /* Label list view */
+          /* Mark list view */
           <>
             <div className="flex flex-col gap-0.5">
-              {allLabelNames.map((labelName, i) => {
-                const labelData = getLabelData(labelName)
-                const isSelected = isLabelSelected(labelName)
-                const isCustom = !PRESET_LABELS.includes(labelName)
-                return (
-                  <button
-                    type="button"
-                    key={labelName}
-                    className={`flex items-center h-8 px-3 text-sm rounded-md text-left transition-colors group ${
-                      focusedIndex === i
-                        ? 'bg-accent text-accent-foreground'
-                        : isSelected
-                          ? 'bg-primary/10 text-primary'
-                          : 'hover:bg-accent/50'
-                    }`}
-                    onClick={() =>
-                      applyLabel(
-                        isSelected && mode === 'single' ? null : labelData
-                      )
-                    }
-                    onMouseEnter={() => setFocusedIndex(i)}
-                    tabIndex={-1}
-                  >
-                    <span
-                      className="w-3 h-3 rounded-full mr-2 flex-shrink-0"
-                      style={{ backgroundColor: labelData.color }}
-                    />
-                    <span className="flex-1 truncate">{labelName}</span>
-                    {target === 'worktree' && (
-                      <Pin
-                        className={`h-3 w-3 transition-opacity mr-1 ${
-                          labelData.pinned
-                            ? 'opacity-100'
-                            : 'opacity-0 group-hover:opacity-50 hover:!opacity-100'
-                        }`}
-                        onClick={e => togglePinned(labelData, e)}
-                      />
-                    )}
-                    {isSelected && <Check className="h-3 w-3 mr-1" />}
-                    {isCustom && (
-                      <>
-                        {onDeleteLabel && (
-                          <Trash2
-                            className="h-3 w-3 opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity mr-1 text-destructive"
-                            onClick={e => deleteLabel(labelData, e)}
-                          />
-                        )}
-                        <Pencil
-                          className="h-3 w-3 opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity mr-1"
-                          onClick={e => startEditColor(labelData, e)}
-                        />
-                      </>
-                    )}
-                  </button>
-                )
-              })}
+              {rows.map((row, i) => (
+                <Fragment
+                  key={`${row.orphan ? 'orphan' : 'mark'}:${row.label.name}`}
+                >
+                  {i === firstOrphanIndex && (
+                    <div className="px-3 pt-2 pb-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Not in list
+                    </div>
+                  )}
+                  {renderRow(row, i)}
+                </Fragment>
+              ))}
             </div>
 
             <div className="border-t pt-2">
               <Input
-                placeholder="Custom label..."
+                placeholder="New mark…"
                 value={inputValue}
                 onChange={e => setInputValue(e.target.value)}
                 onKeyDown={e => {
@@ -508,15 +508,11 @@ export function LabelModal({
         )}
 
         <div className="flex gap-3 text-2xs text-muted-foreground px-1">
-          {isEditing ? (
+          {isCreatingCustom ? (
             <>
               <span>
                 <kbd className="px-1 rounded border bg-muted">↵</kbd>{' '}
-                {editingLabelName
-                  ? 'save'
-                  : mode === 'multi'
-                    ? 'add'
-                    : 'create'}
+                {mode === 'multi' ? 'add' : 'create'}
               </span>
               <span>
                 <kbd className="px-1 rounded border bg-muted">esc</kbd> back

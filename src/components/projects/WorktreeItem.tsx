@@ -9,6 +9,8 @@ import { isBaseSession, type Worktree } from '@/types/projects'
 import { useProjectsStore } from '@/store/projects-store'
 import { useChatStore } from '@/store/chat-store'
 import { SessionMarkChips } from '@/components/chat/SessionMarkChips'
+import { useMarkDefinitions } from '@/lib/marks'
+import { getResourceServerId } from '@/lib/marks-level'
 import { useUIStore } from '@/store/ui-store'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { pushNeedsRemotePicker, useRemotePicker } from '@/hooks/useRemotePicker'
@@ -104,6 +106,7 @@ const WorktreeSessionList = memo(function WorktreeSessionList({
     state => state.activeSessionIds[worktreeId]
   )
   const namingSessionIds = useChatStore(state => state.namingSessionIds)
+  const markDefinitions = useMarkDefinitions(getResourceServerId(worktreeId))
   const storeState = useCanvasStoreState()
   // Per-session cache: a store update for one session only recomputes that
   // session's card instead of rescanning every session's messages.
@@ -330,7 +333,10 @@ const WorktreeSessionList = memo(function WorktreeSessionList({
                           {`${config.label}: ${card.session.name || 'Untitled'}`}
                         </TooltipContent>
                       </Tooltip>
-                      <SessionMarkChips labels={card.labels} />
+                      <SessionMarkChips
+                        labels={card.labels}
+                        definitions={markDefinitions}
+                      />
                     </button>
                   </SidebarSessionContextMenu>
                 )

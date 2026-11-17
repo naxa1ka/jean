@@ -45,7 +45,6 @@ function renderMenu(
       <ContextMenuContent>
         <SessionContextMenuItems
           session={session}
-          hasLabel={false}
           resumeCommand={null}
           onRename={vi.fn()}
           onToggleLabel={vi.fn()}
@@ -71,7 +70,7 @@ describe('SessionContextMenuItems', () => {
     const labels = screen.getAllByRole('menuitem').map(item => item.textContent)
     expect(labels).toEqual([
       'Rename',
-      'Add Label',
+      'Marks…',
       'Copy Session ID',
       'Delete Session',
     ])
@@ -83,13 +82,12 @@ describe('SessionContextMenuItems', () => {
       resumeCommand: 'codex resume thread-1',
       onOpenInNativeClient: vi.fn(),
       onReconnect: vi.fn(),
-      hasLabel: true,
     })
 
     const labels = screen.getAllByRole('menuitem').map(item => item.textContent)
     expect(labels).toEqual([
       'Rename',
-      'Remove Label',
+      'Marks…',
       'Open in Native Client',
       'Native Resume Command',
       'Reconnect',

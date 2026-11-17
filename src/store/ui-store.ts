@@ -44,6 +44,7 @@ export type PreferencePane =
   | 'integrations'
   | 'web-access'
   | 'opinionated'
+  | 'marks'
 
 export type OnboardingStartStep = 'claude' | 'gh' | null
 
@@ -162,6 +163,8 @@ interface UIState {
   preferencesPane: PreferencePane | null
   /** Settings search entry to scroll to when the dialog opens */
   preferencesJumpEntryId: string | null
+  /** Server that Settings targets when it opens (`openPreferencesPane` 2nd arg). */
+  preferencesTargetServerId: string | null
   commitModalOpen: boolean
   onboardingOpen: boolean
   onboardingDismissed: boolean
@@ -300,7 +303,8 @@ interface UIState {
   setCommandPaletteOpen: (open: boolean) => void
   togglePreferences: () => void
   setPreferencesOpen: (open: boolean) => void
-  openPreferencesPane: (pane: PreferencePane) => void
+  /** Open Settings at a pane; `serverId` also selects the Settings target server. */
+  openPreferencesPane: (pane: PreferencePane, serverId?: string) => void
   openPreferencesEntry: (entryId: string | null) => void
   setCommitModalOpen: (open: boolean) => void
   setOnboardingOpen: (open: boolean) => void
@@ -476,6 +480,7 @@ export const useUIStore = create<UIState>()(
       preferencesOpen: false,
       preferencesPane: null,
       preferencesJumpEntryId: null,
+      preferencesTargetServerId: null,
       commitModalOpen: false,
       onboardingOpen: false,
       onboardingDismissed: false,
@@ -789,13 +794,15 @@ export const useUIStore = create<UIState>()(
           'setPreferencesOpen'
         ),
 
-      openPreferencesPane: pane =>
+      openPreferencesPane: (pane, serverId) =>
         set(
           state => {
             const closeSidebar = mustCloseMobileSidebar(state)
+            const targetServerId = serverId ?? null
             if (
               state.preferencesOpen &&
               state.preferencesPane === pane &&
+              state.preferencesTargetServerId === targetServerId &&
               !closeSidebar
             ) {
               return state
@@ -803,6 +810,7 @@ export const useUIStore = create<UIState>()(
             return {
               preferencesOpen: true,
               preferencesPane: pane,
+              preferencesTargetServerId: targetServerId,
               ...(closeSidebar ? { leftSidebarVisible: false } : {}),
             }
           },

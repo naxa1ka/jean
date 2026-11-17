@@ -93,6 +93,8 @@ import { useLoadedSentryContexts } from '@/services/sentry'
 import { useChatStore, DEFAULT_THINKING_LEVEL } from '@/store/chat-store'
 import { usePreferences, usePatchPreferences } from '@/services/preferences'
 import { getLabelTextColor } from '@/lib/label-colors'
+import { resolveMark, useMarkDefinitions } from '@/lib/marks'
+import { getResourceServerId } from '@/lib/marks-level'
 import { parseServerResourceKey } from '@/lib/server-resource'
 import { SettingsTargetProvider } from '@/lib/settings-target'
 import {
@@ -462,6 +464,9 @@ const ChatWindowContent = memo(function ChatWindowContent({
     activeSessionId
       ? (state.sessionLabels[activeSessionId] ?? NO_SESSION_LABELS)
       : NO_SESSION_LABELS
+  )
+  const markDefinitions = useMarkDefinitions(
+    activeWorktreeId ? getResourceServerId(activeWorktreeId) : undefined
   )
 
   // Function selectors - these return stable function references
@@ -2853,18 +2858,22 @@ const ChatWindowContent = memo(function ChatWindowContent({
                         {/* Top-right session label - absolute positioned to avoid covering content */}
                         {sessionLabels.length > 0 && (
                           <div className="absolute top-2 right-4 z-20 flex gap-1">
-                            {sessionLabels.map(label => (
-                              <span
-                                key={label.name}
-                                className="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium"
-                                style={{
-                                  backgroundColor: label.color,
-                                  color: getLabelTextColor(label.color),
-                                }}
-                              >
-                                {label.name}
-                              </span>
-                            ))}
+                            {sessionLabels.map(label => {
+                              const mark = resolveMark(label, markDefinitions)
+                              return (
+                                <span
+                                  key={label.name}
+                                  className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium"
+                                  style={{
+                                    backgroundColor: mark.color,
+                                    color: getLabelTextColor(mark.color),
+                                  }}
+                                >
+                                  {mark.icon && <span>{mark.icon}</span>}
+                                  {mark.name}
+                                </span>
+                              )
+                            })}
                           </div>
                         )}
                         <ChatSearchBar

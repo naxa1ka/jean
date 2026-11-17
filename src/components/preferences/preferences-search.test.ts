@@ -75,6 +75,15 @@ describe('preferences search index', () => {
     ).toBe(true)
   })
 
+  it('finds the Marks pane by its old name "labels"', () => {
+    setTauriInternals(false)
+
+    expect(searchPreferenceEntries('marks')[0]?.id).toBe('pane-marks')
+    expect(
+      searchPreferenceEntries('labels').some(entry => entry.id === 'pane-marks')
+    ).toBe(true)
+  })
+
   it('finds the server preview hostname in web access', () => {
     setTauriInternals(false)
 
