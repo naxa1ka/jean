@@ -8,7 +8,7 @@ use std::collections::HashMap;
 const DEFAULT_LABEL_COLOR: &str = "#eab308";
 
 /// User-assigned label with color for session cards
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LabelData {
     /// Label name (e.g. "Needs testing")
     pub name: String,

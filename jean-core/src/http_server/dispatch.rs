@@ -191,6 +191,23 @@ pub async fn dispatch_command(
             emit_cache_invalidation(app, &["preferences"]);
             to_value(result)
         }
+        "count_mark_usage" => {
+            let name: String = from_field(&args, "name")?;
+            to_value(crate::marks::count_mark_usage(app.clone(), name).await?)
+        }
+        "rename_mark" => {
+            let old_name: String = field(&args, "oldName", "old_name")?;
+            let new_name: String = field(&args, "newName", "new_name")?;
+            let result = crate::marks::rename_mark(app.clone(), old_name, new_name).await?;
+            emit_cache_invalidation(app, &["preferences", "sessions", "projects"]);
+            to_value(result)
+        }
+        "remove_mark_everywhere" => {
+            let name: String = from_field(&args, "name")?;
+            let result = crate::marks::remove_mark_everywhere(app.clone(), name).await?;
+            emit_cache_invalidation(app, &["preferences", "sessions", "projects"]);
+            to_value(result)
+        }
         "set_window_vibrancy" => {
             let enabled: bool = from_field(&args, "enabled")?;
             crate::set_window_vibrancy(app.clone(), enabled).await?;
@@ -538,6 +555,7 @@ pub async fn dispatch_command(
             let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;
             let labels: Vec<crate::chat::types::LabelData> = from_field(&args, "labels")?;
             crate::projects::update_worktree_labels(app.clone(), worktree_id, labels).await?;
+            emit_cache_invalidation(app, &["projects"]);
             Ok(Value::Null)
         }
         "has_uncommitted_changes" => {

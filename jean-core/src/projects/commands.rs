@@ -5407,16 +5407,14 @@ pub async fn update_worktree_labels(
 
     super::types::dedupe_labels_by_name(&mut labels);
 
-    let mut data = load_projects_data(&app)?;
-
-    let worktree = data
-        .find_worktree_mut(&worktree_id)
-        .ok_or_else(|| format!("Worktree not found: {worktree_id}"))?;
-
-    worktree.labels = labels;
-    worktree.label = None;
-
-    save_projects_data(&app, &data)?;
+    super::storage::with_projects_data_mut(&app, |data| {
+        let worktree = data
+            .find_worktree_mut(&worktree_id)
+            .ok_or_else(|| format!("Worktree not found: {worktree_id}"))?;
+        worktree.labels = labels;
+        worktree.label = None;
+        Ok(())
+    })?;
 
     log::trace!("Successfully updated worktree labels for: {worktree_id}");
     Ok(())

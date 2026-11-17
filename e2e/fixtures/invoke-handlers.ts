@@ -74,6 +74,9 @@ export const defaultResponses: Record<string, unknown> = {
   save_preferences: null,
   set_mark_definitions: mockPreferences.mark_definitions,
   merge_mark_definitions: mockPreferences.mark_definitions,
+  count_mark_usage: { worktrees: 0, sessions: 0 },
+  rename_mark: { worktrees: 0, sessions: 0 },
+  remove_mark_everywhere: { worktrees: 0, sessions: 0 },
 
   // UI State
   get_native_client_id: '11111111-1111-4111-8111-111111111111',
