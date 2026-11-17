@@ -1,10 +1,12 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { isNativeApp } from '@/lib/environment'
+import { TRACKED_MARKS_LEVEL } from '@/lib/marks'
+import { useMarksLevelLookup } from '@/lib/marks-level'
 import { useRemoteConnections } from '@/lib/remote-connections'
 import { useServerConnectionSnapshots } from '@/lib/server-connections'
 import { invoke, invokeForServer } from '@/lib/transport'
 import { LOCAL_SERVER_ID } from '@/types/server-resource'
-import type { AllSessionsResponse } from '@/types/chat'
+import type { AllSessionsResponse, TrackedItemsResponse } from '@/types/chat'
 
 export interface SessionServerSource {
   serverId: string
@@ -39,6 +41,36 @@ export async function loadAllSessionsForServers(
           }))
         : []
     ),
+  }
+}
+
+/** Tracked items of every online server, each tagged with its server. */
+export async function loadTrackedItemsForServers(
+  sources: SessionServerSource[],
+  invokeServer: (serverId: string) => Promise<TrackedItemsResponse>
+): Promise<TrackedItemsResponse> {
+  const responses = await Promise.allSettled(
+    sources
+      .filter(source => source.online)
+      .map(async source => ({
+        source,
+        response: await invokeServer(source.serverId),
+      }))
+  )
+
+  return {
+    entries: responses
+      .flatMap(result =>
+        result.status === 'fulfilled'
+          ? result.value.response.entries.map(entry => ({
+              ...entry,
+              serverId: result.value.source.serverId,
+              serverName: result.value.source.name,
+            }))
+          : []
+      )
+      // Newest mark first across servers; items without a date go last.
+      .sort((a, b) => (b.added_at ?? -1) - (a.added_at ?? -1)),
   }
 }
 
@@ -145,5 +177,47 @@ export function useConsolidatedUnreadSessionCount() {
     staleTime: 60_000,
     gcTime: 120_000,
     refetchInterval: native ? 60_000 : false,
+  })
+}
+
+/** Session sources whose server lists tracked items (marks level >= 4). */
+export function useTrackedServerSources(): SessionServerSource[] {
+  const sources = useSessionServerSources()
+  const marksLevel = useMarksLevelLookup()
+  return sources.filter(
+    source =>
+      marksLevel(
+        source.serverId === LOCAL_SERVER_ID ? undefined : source.serverId
+      ) >= TRACKED_MARKS_LEVEL
+  )
+}
+
+/**
+ * Sessions and worktrees with tracked marks, for the bell "Tracked" tab. Lives
+ * under the ['all-sessions'] prefix so session invalidations refresh it too.
+ */
+export function useConsolidatedTrackedItems(enabled = true) {
+  const native = isNativeApp()
+  const sources = useTrackedServerSources()
+  const sourceKey = sources
+    .map(source => `${source.serverId}:${source.online}`)
+    .join('|')
+
+  return useQuery({
+    queryKey: ['all-sessions', 'tracked', sourceKey],
+    queryFn: () =>
+      native
+        ? loadTrackedItemsForServers(sources, serverId =>
+            invokeForServer<TrackedItemsResponse>(
+              serverId,
+              'list_tracked_items'
+            )
+          )
+        : invoke<TrackedItemsResponse>('list_tracked_items'),
+    enabled: enabled && sources.length > 0,
+    staleTime: 60_000,
+    gcTime: 120_000,
+    refetchInterval: native ? 60_000 : false,
+    placeholderData: keepPreviousData,
   })
 }

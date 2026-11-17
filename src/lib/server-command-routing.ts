@@ -577,6 +577,26 @@ export function decorateServerResult<T>(
         : response.entries,
     } as T
   }
+  if (command === 'list_tracked_items' && value && typeof value === 'object') {
+    const response = value as Record<string, unknown>
+    return {
+      ...response,
+      entries: Array.isArray(response.entries)
+        ? response.entries.map(entry => {
+            if (!entry || typeof entry !== 'object') return entry
+            const record = entry as Record<string, unknown>
+            return {
+              ...record,
+              project_id: scopedId(serverId, record.project_id),
+              worktree_id: scopedId(serverId, record.worktree_id),
+              session: record.session
+                ? decorateSession(serverId, record.session)
+                : record.session,
+            }
+          })
+        : response.entries,
+    } as T
+  }
   if (
     [
       'add_project',

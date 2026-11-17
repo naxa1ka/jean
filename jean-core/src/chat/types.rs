@@ -1683,6 +1683,18 @@ pub struct SessionIndexEntry {
     /// unread summary was introduced. Missing values are migrated lazily.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread_summary: Option<SessionUnreadSummary>,
+    /// Lower-cased mark names of the session, so the tracked list reads only
+    /// the index. `None` = not indexed yet (older index); filled lazily.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_names: Option<Vec<String>>,
+}
+
+/// Lower-cased names of `labels`, as stored in `SessionIndexEntry::label_names`.
+pub fn index_label_names(labels: &[LabelData]) -> Vec<String> {
+    labels
+        .iter()
+        .map(|label| label.name.to_lowercase())
+        .collect()
 }
 
 impl SessionIndexEntry {
@@ -1694,6 +1706,7 @@ impl SessionIndexEntry {
             message_count: session.message_count.unwrap_or(0),
             archived_at: session.archived_at,
             unread_summary: Some(SessionUnreadSummary::from_session(session)),
+            label_names: Some(index_label_names(&session.labels)),
         }
     }
 }
@@ -1731,6 +1744,7 @@ impl Default for WorktreeIndex {
                 message_count: 0,
                 archived_at: None,
                 unread_summary: Some(SessionUnreadSummary::default()),
+                label_names: Some(Vec::new()),
             }],
             version: 1,
             branch_naming_completed: false,
@@ -1765,6 +1779,7 @@ impl WorktreeIndex {
                 message_count: 0,
                 archived_at: None,
                 unread_summary: Some(SessionUnreadSummary::default()),
+                label_names: Some(Vec::new()),
             }],
             version: 1,
             branch_naming_completed: false,
@@ -2192,6 +2207,32 @@ pub struct AllSessionsEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllSessionsResponse {
     pub entries: Vec<AllSessionsEntry>,
+}
+
+/// One session or worktree with tracked marks, for the bell "Tracked" tab.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedItemEntry {
+    /// `"session"` or `"worktree"`.
+    pub kind: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub worktree_id: String,
+    pub worktree_name: String,
+    pub worktree_path: String,
+    /// Set for `kind == "session"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Session>,
+    /// Only the tracked marks of the item.
+    pub marks: Vec<LabelData>,
+    /// Newest `added_at` of `marks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<u64>,
+}
+
+/// Response of `list_tracked_items`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedItemsResponse {
+    pub entries: Vec<TrackedItemEntry>,
 }
 
 // ============================================================================
@@ -2938,6 +2979,7 @@ impl SessionMetadata {
             message_count,
             archived_at: self.archived_at,
             unread_summary: Some(self.to_unread_summary()),
+            label_names: Some(index_label_names(&self.labels)),
         }
     }
 }

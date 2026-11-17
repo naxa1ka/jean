@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AllSessionsResponse } from '@/types/chat'
+import type { AllSessionsResponse, TrackedItemsResponse } from '@/types/chat'
 import {
   loadAllSessionsForServers,
+  loadTrackedItemsForServers,
   loadUnreadSessionCountForServers,
 } from './multi-server-sessions'
 
@@ -100,5 +101,56 @@ describe('loadUnreadSessionCountForServers', () => {
 
     expect(result).toBe(5)
     expect(invoke).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('loadTrackedItemsForServers', () => {
+  function tracked(
+    server: string,
+    addedAt: (number | undefined)[]
+  ): TrackedItemsResponse {
+    return {
+      entries: addedAt.map((added_at, index) => ({
+        kind: 'worktree',
+        project_id: `${server}-project`,
+        project_name: server,
+        worktree_id: `${server}-worktree-${index}`,
+        worktree_name: 'main',
+        worktree_path: `/${server}`,
+        marks: [],
+        added_at,
+      })),
+    }
+  }
+
+  it('merges online servers newest first and tags each owner', async () => {
+    const invoke = vi.fn(async (serverId: string) =>
+      serverId === 'local'
+        ? tracked('local', [30, undefined])
+        : serverId === 'broken'
+          ? Promise.reject(new Error('down'))
+          : tracked(serverId, [50, 10])
+    )
+
+    const result = await loadTrackedItemsForServers(
+      [
+        { serverId: 'local', name: 'Local', online: true },
+        { serverId: 'remote-1', name: 'Build box', online: true },
+        { serverId: 'broken', name: 'Broken', online: true },
+        { serverId: 'remote-2', name: 'Offline box', online: false },
+      ],
+      invoke
+    )
+
+    expect(invoke).toHaveBeenCalledTimes(3)
+    expect(
+      result.entries.map(entry => [entry.worktree_id, entry.serverName])
+    ).toEqual([
+      ['remote-1-worktree-0', 'Build box'],
+      ['local-worktree-0', 'Local'],
+      ['remote-1-worktree-1', 'Build box'],
+      ['local-worktree-1', 'Local'],
+    ])
+    expect(result.entries[0]).toMatchObject({ serverId: 'remote-1' })
   })
 })

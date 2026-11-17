@@ -8,8 +8,8 @@ use once_cell::sync::Lazy;
 use tauri::AppHandle;
 
 use super::types::{
-    RunStateStamp, SavedContextsMetadata, Session, SessionIndexEntry, SessionMetadata,
-    WorktreeIndex, WorktreeSessions,
+    index_label_names, RunStateStamp, SavedContextsMetadata, Session, SessionIndexEntry,
+    SessionMetadata, SessionUnreadSummary, WorktreeIndex, WorktreeSessions,
 };
 
 // ============================================================================
@@ -234,16 +234,17 @@ where
     Ok(result)
 }
 
-/// Keep the index's unread summary synchronized with a metadata write.
+/// Keep the index's unread summary and mark names synchronized with a metadata write.
 ///
 /// Metadata is the authoritative session store, so this helper only updates an
 /// existing index entry. Legacy or partially-created indexes are repaired by
-/// the unread-count command when it encounters a missing summary.
+/// the unread-count and tracked-list commands when they find a missing value.
 pub fn update_session_index_unread_summary(
     app: &AppHandle,
     metadata: &SessionMetadata,
 ) -> Result<(), String> {
     let summary = metadata.to_unread_summary();
+    let label_names = index_label_names(&metadata.labels);
     let lock = get_index_lock(&metadata.worktree_id);
     let _guard = lock.lock().unwrap();
 
@@ -252,12 +253,23 @@ pub fn update_session_index_unread_summary(
         return Ok(());
     };
 
-    if entry.unread_summary.as_ref() == Some(&summary) {
+    if entry.unread_summary.as_ref() == Some(&summary)
+        && entry.label_names.as_ref() == Some(&label_names)
+    {
         return Ok(());
     }
 
     entry.unread_summary = Some(summary);
+    entry.label_names = Some(label_names);
     save_index_internal(app, &index)
+}
+
+/// The index-sized values of a metadata copy, to see when the index needs a write.
+fn index_snapshot(metadata: &SessionMetadata) -> (SessionUnreadSummary, Vec<String>) {
+    (
+        metadata.to_unread_summary(),
+        index_label_names(&metadata.labels),
+    )
 }
 
 // ============================================================================
@@ -425,14 +437,14 @@ where
 
         let mut metadata = load_metadata_internal(app, session_id)?
             .ok_or_else(|| format!("Session {session_id} not found"))?;
-        let previous_summary = metadata.to_unread_summary();
+        let previous_summary = index_snapshot(&metadata);
         let prior = metadata.run_state_stamp();
         let result = f(&mut metadata);
         save_metadata_internal(app, &metadata, Some(prior))?;
         (result, previous_summary, metadata)
     };
 
-    if previous_summary != metadata.to_unread_summary() {
+    if previous_summary != index_snapshot(&metadata) {
         update_session_index_unread_summary(app, &metadata)?;
     }
 
@@ -457,9 +469,7 @@ where
         let _guard = lock.lock().unwrap();
 
         let existing_metadata = load_metadata_internal(app, session_id)?;
-        let previous_summary = existing_metadata
-            .as_ref()
-            .map(SessionMetadata::to_unread_summary);
+        let previous_summary = existing_metadata.as_ref().map(index_snapshot);
         let prior = existing_metadata
             .as_ref()
             .map(SessionMetadata::run_state_stamp);
@@ -477,7 +487,7 @@ where
         (result, previous_summary, metadata)
     };
 
-    if previous_summary.as_ref() != Some(&metadata.to_unread_summary()) {
+    if previous_summary.as_ref() != Some(&index_snapshot(&metadata)) {
         update_session_index_unread_summary(app, &metadata)?;
     }
 
@@ -1643,6 +1653,7 @@ mod tests {
             message_count: 12,
             archived_at: None,
             unread_summary: None,
+            label_names: None,
         };
         let remaining_entry = SessionIndexEntry {
             id: "session-stays".to_string(),
@@ -1651,6 +1662,7 @@ mod tests {
             message_count: 3,
             archived_at: None,
             unread_summary: None,
+            label_names: None,
         };
         let mut source = WorktreeIndex {
             worktree_id: "source".to_string(),
@@ -1666,6 +1678,7 @@ mod tests {
             message_count: 0,
             archived_at: None,
             unread_summary: None,
+            label_names: None,
         };
         let mut target = WorktreeIndex {
             worktree_id: "target".to_string(),
@@ -1709,6 +1722,7 @@ mod tests {
             message_count: 0,
             archived_at: None,
             unread_summary: None,
+            label_names: None,
         };
         let source = WorktreeIndex {
             worktree_id: "source".to_string(),
@@ -1829,6 +1843,7 @@ mod tests {
             message_count: 0,
             archived_at: None,
             unread_summary: None,
+            label_names: None,
         });
         assert_eq!(index.sessions.len(), 2);
         assert_eq!(index.next_session_number(), 3);

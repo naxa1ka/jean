@@ -283,10 +283,18 @@ export function applyCacheInvalidationKeys(
         queryClient.invalidateQueries({
           queryKey: ['multi-server', 'projects'],
         })
+        // Worktree marks feed the bell "Tracked" tab.
+        queryClient.invalidateQueries({
+          queryKey: ['all-sessions', 'tracked'],
+        })
         break
       case 'preferences':
         queryClient.invalidateQueries({
           queryKey: ['preferences'],
+        })
+        // A mark that becomes tracked (or not) changes the tracked list.
+        queryClient.invalidateQueries({
+          queryKey: ['all-sessions', 'tracked'],
         })
         break
       case 'ui-state':

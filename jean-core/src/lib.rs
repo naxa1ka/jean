@@ -4642,7 +4642,7 @@ pub async fn get_server_capabilities() -> Result<ServerCapabilitiesEnvelope, Str
         api_protocol: 1,
         api_protocol_min: 1,
         capabilities: std::collections::BTreeMap::from([
-            ("marks".to_string(), 3),
+            ("marks".to_string(), 4),
             ("multiServerTransport".to_string(), 1),
         ]),
         magic_prompts: prompts
@@ -4848,7 +4848,7 @@ mod server_capabilities_tests {
         assert_eq!(value["apiProtocol"], 1);
         assert_eq!(value["apiProtocolMin"], 1);
         assert_eq!(value["capabilities"]["multiServerTransport"], 1);
-        assert_eq!(value["capabilities"]["marks"], 3);
+        assert_eq!(value["capabilities"]["marks"], 4);
         assert!(value.get("featureSurfaces").is_none());
         assert!(value.get("magicPrompts").is_some());
     }

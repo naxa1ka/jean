@@ -1,4 +1,8 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from '@tanstack/react-query'
 import {
   fireEvent,
   render,
@@ -9,7 +13,13 @@ import {
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AllSessionsResponse, Session } from '@/types/chat'
+import type {
+  AllSessionsResponse,
+  LabelData,
+  Session,
+  TrackedItemEntry,
+} from '@/types/chat'
+import type { MarkDefinition } from '@/types/preferences'
 import { UnreadBell } from './UnreadBell'
 
 const invokeMock = vi.fn()
@@ -20,6 +30,40 @@ let allSessionsFetching = false
 let unreadCount = 2
 let unreadSessionsEnabled: boolean | undefined
 let sendingSessionIds: Record<string, boolean> = {}
+let trackedEntries: TrackedItemEntry[] = []
+let marksLevel = 4
+let sessionLabels: Record<string, LabelData[]> = {}
+let sessionWorktreeMap: Record<string, string> = {}
+const REVIEW_LATER: MarkDefinition = {
+  name: 'Review later',
+  color: '#3b82f6',
+  icon: '🔖',
+  tracked: true,
+}
+let markDefinitions: MarkDefinition[] = [
+  { name: 'QA', color: '#22c55e', icon: null, tracked: false },
+  REVIEW_LATER,
+]
+
+vi.mock('@/services/multi-server-sessions', () => ({
+  useTrackedServerSources: () =>
+    marksLevel >= 4 ? [{ serverId: 'local', name: 'Local', online: true }] : [],
+  useConsolidatedTrackedItems: () =>
+    useQuery({
+      queryKey: ['all-sessions', 'tracked', 'test'],
+      queryFn: () => ({ entries: [...trackedEntries] }),
+    }),
+}))
+
+vi.mock('@/lib/marks-level', () => ({
+  useMarksLevelLookup: () => () => marksLevel,
+}))
+
+vi.mock('@/lib/marks', async importOriginal => ({
+  ...(await importOriginal()),
+  useMarkDefinitionsByServer: () => () =>
+    marksLevel >= 2 ? markDefinitions : [],
+}))
 
 vi.mock('@/lib/transport', () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -67,11 +111,13 @@ vi.mock('@/lib/environment', async importOriginal => ({
 }))
 
 const selectProjectMock = vi.fn()
+const selectWorktreeMock = vi.fn()
 vi.mock('@/store/projects-store', () => ({
   useProjectsStore: {
     getState: () => ({
       selectedProjectId: 'project-1',
       selectProject: selectProjectMock,
+      selectWorktree: selectWorktreeMock,
     }),
   },
 }))
@@ -79,6 +125,7 @@ vi.mock('@/store/projects-store', () => ({
 const setActiveSessionMock = vi.fn()
 const clearActiveWorktreeMock = vi.fn()
 const setLastOpenedForProjectMock = vi.fn()
+const setSessionLabelsMock = vi.fn()
 vi.mock('@/store/chat-store', () => ({
   useChatStore: Object.assign(
     (
@@ -91,6 +138,9 @@ vi.mock('@/store/chat-store', () => ({
         setActiveSession: setActiveSessionMock,
         clearActiveWorktree: clearActiveWorktreeMock,
         setLastOpenedForProject: setLastOpenedForProjectMock,
+        setSessionLabels: setSessionLabelsMock,
+        sessionLabels,
+        sessionWorktreeMap,
       }),
     }
   ),
@@ -170,6 +220,14 @@ describe('UnreadBell', () => {
     allSessionsFetching = false
     sendingSessionIds = {}
     finishedSessionAnimationEnabled = true
+    trackedEntries = []
+    marksLevel = 4
+    sessionLabels = {}
+    sessionWorktreeMap = {}
+    markDefinitions = [
+      { name: 'QA', color: '#22c55e', icon: null, tracked: false },
+      REVIEW_LATER,
+    ]
     allSessions = {
       entries: [
         {
@@ -417,7 +475,7 @@ describe('UnreadBell', () => {
 
     await openDropdown()
 
-    const row = screen.getByText('Session one').closest('button')
+    const row = screen.getByText('Session one').closest('[data-unread-index]')
     expect(row?.querySelector('svg')?.getAttribute('class') ?? '').toContain(
       'animate-spin'
     )
@@ -486,8 +544,12 @@ describe('UnreadBell', () => {
   it('shows an R keyboard affordance on the focused unread row', async () => {
     await openDropdown()
 
-    const firstRow = screen.getByText('Session one').closest('button')
-    const secondRow = screen.getByText('Session two').closest('button')
+    const firstRow = screen
+      .getByText('Session one')
+      .closest('[data-unread-index]')
+    const secondRow = screen
+      .getByText('Session two')
+      .closest('[data-unread-index]')
 
     if (!firstRow || !secondRow) {
       throw new Error('Expected both unread session rows to render')
@@ -545,7 +607,9 @@ describe('UnreadBell', () => {
       screen.queryByText(/(?:⌘|⌃|Ctrl) \+ (?:⇧|Shift) \+ F/i)
     ).not.toBeInTheDocument()
 
-    const firstRow = screen.getByText('Session one').closest('button')
+    const firstRow = screen
+      .getByText('Session one')
+      .closest('[data-unread-index]')
     if (!firstRow) throw new Error('Expected first unread session row')
     expect(within(firstRow).queryByText('R')).not.toBeInTheDocument()
 
@@ -566,7 +630,9 @@ describe('UnreadBell', () => {
       screen.queryByText(/(?:⌘|⌃|Ctrl) \+ (?:⇧|Shift) \+ F/i)
     ).not.toBeInTheDocument()
 
-    const firstRow = screen.getByText('Session one').closest('button')
+    const firstRow = screen
+      .getByText('Session one')
+      .closest('[data-unread-index]')
     if (!firstRow) throw new Error('Expected first unread session row')
     expect(within(firstRow).queryByText('R')).not.toBeInTheDocument()
 
@@ -574,5 +640,351 @@ describe('UnreadBell', () => {
 
     expect(invokeMock).not.toHaveBeenCalled()
     expect(screen.getByText('Session one')).toBeInTheDocument()
+  })
+
+  describe('tracked marks', () => {
+    const reviewLater: LabelData = {
+      name: 'Review later',
+      color: '#3b82f6',
+      added_at: 5,
+    }
+
+    function trackedSession(
+      overrides: Partial<TrackedItemEntry> = {}
+    ): TrackedItemEntry {
+      return {
+        kind: 'session',
+        project_id: 'project-1',
+        project_name: 'Jean',
+        worktree_id: 'worktree-9',
+        worktree_name: 'feature-x',
+        worktree_path: '/repo-x',
+        session: session({
+          id: 'tracked-1',
+          name: 'Tracked session',
+          worktree_id: 'worktree-9',
+        }),
+        marks: [reviewLater],
+        added_at: 5,
+        ...overrides,
+      }
+    }
+
+    const trackedWorktree: TrackedItemEntry = {
+      kind: 'worktree',
+      project_id: 'project-2',
+      project_name: 'API',
+      worktree_id: 'worktree-7',
+      worktree_name: 'hotfix',
+      worktree_path: '/api-hotfix',
+      marks: [reviewLater],
+      added_at: 4,
+    }
+
+    function row(text: string): HTMLElement {
+      const element = screen.getByText(text).closest('[data-unread-index]')
+      if (!(element instanceof HTMLElement)) throw new Error(`No row: ${text}`)
+      return element
+    }
+
+    async function openTrackedTab() {
+      const user = await openDropdown()
+      await user.click(await screen.findByRole('button', { name: /^Tracked/ }))
+      await screen.findByText('Tracked session')
+      return user
+    }
+
+    it('shows Unread and Tracked tabs with their counts', async () => {
+      trackedEntries = [trackedSession(), trackedWorktree]
+      const user = await openDropdown()
+
+      expect(
+        screen.getByRole('button', { name: 'Unread (2)' })
+      ).toHaveAttribute('aria-pressed', 'true')
+      await user.click(
+        await screen.findByRole('button', { name: 'Tracked (2)' })
+      )
+
+      expect(screen.getByText('Tracked session')).toBeInTheDocument()
+      expect(screen.getByText('hotfix', { selector: '.truncate' }))
+      expect(screen.queryByText('Session one')).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: 'Mark all read' })
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows the trigger with only tracked items and opens on Tracked', async () => {
+      unreadCount = 0
+      allSessions = { entries: [] }
+      trackedEntries = [trackedSession(), trackedWorktree]
+      const user = userEvent.setup()
+      renderWithQueryClient(<UnreadBell title="Jean" />)
+
+      const trigger = await screen.findByRole('button', { name: '2 tracked' })
+      await user.click(trigger)
+
+      expect(
+        await screen.findByRole('button', { name: 'Tracked (2)' })
+      ).toHaveAttribute('aria-pressed', 'true')
+      expect(await screen.findByText('Tracked session')).toBeInTheDocument()
+    })
+
+    it('names finished and tracked counts in the trigger label', async () => {
+      trackedEntries = [trackedSession()]
+      renderWithQueryClient(<UnreadBell title="Jean" />)
+
+      expect(
+        await screen.findByRole('button', { name: '2 finished · 1 tracked' })
+      ).toBeInTheDocument()
+    })
+
+    it('shows project and worktree on every row', async () => {
+      trackedEntries = [trackedSession(), trackedWorktree]
+      allSessions = {
+        entries: [
+          {
+            project_id: 'remote-1:project-1',
+            project_name: 'Jean',
+            worktree_id: 'remote-1:worktree-1',
+            worktree_name: 'main',
+            worktree_path: '/repo',
+            serverId: 'remote-1',
+            serverName: 'Build box',
+            sessions: [session({ id: 'remote-1:session-1' })],
+          },
+        ],
+      }
+      unreadCount = 1
+      const user = userEvent.setup()
+      renderWithQueryClient(<UnreadBell title="Jean" />)
+      await user.click(
+        await screen.findByRole('button', { name: /1 finished/ })
+      )
+
+      const unreadRow = row('Session one')
+      expect(within(unreadRow).getByText('Jean')).toBeInTheDocument()
+      expect(within(unreadRow).getByText('· main')).toBeInTheDocument()
+      expect(within(unreadRow).getByText('· Build box')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: /^Tracked/ }))
+      const sessionRow = row('Tracked session')
+      expect(within(sessionRow).getByText('Jean')).toBeInTheDocument()
+      expect(within(sessionRow).getByText('· feature-x')).toBeInTheDocument()
+      const worktreeRow = row('· hotfix')
+      expect(within(worktreeRow).getByText('API')).toBeInTheDocument()
+    })
+
+    it('adds the first tracked mark with L and marks the session read', async () => {
+      sessionWorktreeMap = { 'session-1': 'worktree-1' }
+      sessionLabels = {
+        'session-1': [{ name: 'QA', color: '#22c55e' }],
+      }
+      const user = await openDropdown()
+
+      await user.keyboard('l')
+
+      const next = [
+        { name: 'QA', color: '#22c55e' },
+        { name: 'Review later', color: '#3b82f6' },
+      ]
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith('update_session_state', {
+          worktreeId: 'worktree-1',
+          worktreePath: '/repo',
+          sessionId: 'session-1',
+          labels: next,
+        })
+        expect(invokeMock).toHaveBeenCalledWith('set_session_last_opened', {
+          sessionId: 'session-1',
+        })
+      })
+      expect(setSessionLabelsMock).toHaveBeenCalledWith('session-1', next)
+      expect(screen.queryByText('Session one')).not.toBeInTheDocument()
+    })
+
+    it('marks read without a second mark when the session already has it', async () => {
+      allSessions = {
+        entries: [
+          {
+            project_id: 'project-1',
+            project_name: 'Jean',
+            worktree_id: 'worktree-1',
+            worktree_name: 'main',
+            worktree_path: '/repo',
+            sessions: [
+              session({
+                id: 'session-1',
+                name: 'Session one',
+                labels: [reviewLater],
+              }),
+              session({ id: 'session-2', name: 'Session two' }),
+            ],
+          },
+        ],
+      }
+      const user = await openDropdown()
+
+      await user.click(
+        within(row('Session one')).getByRole('button', {
+          name: 'Review later',
+        })
+      )
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith('set_session_last_opened', {
+          sessionId: 'session-1',
+        })
+      })
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        'update_session_state',
+        expect.anything()
+      )
+    })
+
+    it('clears tracked marks with D and removes the row', async () => {
+      trackedEntries = [trackedSession(), trackedWorktree]
+      let finishClear: ((kept: LabelData[]) => void) | undefined
+      invokeMock.mockImplementation((command: string) =>
+        command === 'clear_tracked_marks'
+          ? new Promise<LabelData[]>(resolve => {
+              finishClear = resolve
+            })
+          : Promise.resolve(undefined)
+      )
+      const user = await openTrackedTab()
+
+      await user.keyboard('d')
+
+      expect(invokeMock).toHaveBeenCalledWith('clear_tracked_marks', {
+        worktreeId: 'worktree-9',
+        worktreePath: '/repo-x',
+        sessionId: 'tracked-1',
+      })
+      // Removed at once, before the server answers.
+      expect(screen.queryByText('Tracked session')).not.toBeInTheDocument()
+      expect(screen.getByText('· hotfix')).toBeInTheDocument()
+      trackedEntries = [trackedWorktree]
+      finishClear?.([])
+      await waitFor(() => {
+        expect(screen.getByText('· hotfix')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('Tracked session')).not.toBeInTheDocument()
+    })
+
+    it('clears a worktree with the Done button', async () => {
+      trackedEntries = [trackedWorktree]
+      unreadCount = 0
+      allSessions = { entries: [] }
+      invokeMock.mockImplementation(async (command: string) => {
+        if (command !== 'clear_tracked_marks') return undefined
+        trackedEntries = []
+        return []
+      })
+      const user = userEvent.setup()
+      renderWithQueryClient(<UnreadBell title="Jean" />)
+      await user.click(await screen.findByRole('button', { name: '1 tracked' }))
+
+      await user.click(
+        within(row('· hotfix')).getByRole('button', { name: 'Done' })
+      )
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith('clear_tracked_marks', {
+          worktreeId: 'worktree-7',
+          worktreePath: '/api-hotfix',
+          sessionId: undefined,
+        })
+      })
+      expect(screen.queryByText('· hotfix')).not.toBeInTheDocument()
+    })
+
+    it('opens a tracked session without marking it read', async () => {
+      trackedEntries = [trackedSession()]
+      const user = await openTrackedTab()
+
+      await user.click(screen.getByText('Tracked session'))
+
+      expect(setActiveSessionMock).toHaveBeenCalledWith(
+        'worktree-9',
+        'tracked-1',
+        { markOpened: false }
+      )
+      expect(markWorktreeForAutoOpenSessionMock).toHaveBeenCalledWith(
+        'worktree-9',
+        'tracked-1'
+      )
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        'set_session_last_opened',
+        expect.anything()
+      )
+    })
+
+    it('opens a tracked worktree on the canvas', async () => {
+      trackedEntries = [trackedSession(), trackedWorktree]
+      const user = await openTrackedTab()
+
+      await user.click(
+        within(row('· hotfix')).getByRole('button', { name: /hotfix/ })
+      )
+
+      expect(selectProjectMock).toHaveBeenCalledWith('project-2')
+      expect(clearActiveWorktreeMock).toHaveBeenCalled()
+      expect(selectWorktreeMock).toHaveBeenCalledWith('worktree-7')
+      expect(markWorktreeForAutoOpenSessionMock).toHaveBeenCalledWith(
+        'worktree-7'
+      )
+      expect(setRailSectionMock).toHaveBeenCalledWith('workspace')
+    })
+
+    it.each([
+      ['web access', { native: false, mobile: false }],
+      ['mobile', { native: true, mobile: true }],
+    ])(
+      'has no tracked keys or key hints in %s',
+      async (_name, { native, mobile }) => {
+        const testGlobals = globalThis as typeof globalThis & {
+          __JEAN_TEST_IS_NATIVE__?: boolean
+          __JEAN_TEST_IS_MOBILE__?: boolean
+        }
+        testGlobals.__JEAN_TEST_IS_NATIVE__ = native
+        testGlobals.__JEAN_TEST_IS_MOBILE__ = mobile
+        trackedEntries = [trackedSession()]
+        const user = await openDropdown()
+
+        await user.keyboard('l')
+        expect(row('Session one').querySelector('kbd')).toBeNull()
+        expect(
+          within(row('Session one')).getByRole('button', {
+            name: 'Review later',
+          })
+        ).not.toHaveClass('opacity-0')
+
+        await user.click(screen.getByRole('button', { name: /^Tracked/ }))
+        await screen.findByText('Tracked session')
+        await user.keyboard('d')
+
+        expect(document.querySelector('kbd')).toBeNull()
+        expect(
+          within(row('Tracked session')).getByRole('button', { name: 'Done' })
+        ).not.toHaveClass('opacity-0')
+        expect(invokeMock).not.toHaveBeenCalled()
+      }
+    )
+
+    it('hides the tabs and Review later below marks level 4', async () => {
+      marksLevel = 3
+      trackedEntries = [trackedSession()]
+      await openDropdown()
+
+      expect(
+        screen.queryByRole('button', { name: /^Tracked/ })
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: 'Review later' })
+      ).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: '2 finished sessions' })
+      ).toBeInTheDocument()
+    })
   })
 })
