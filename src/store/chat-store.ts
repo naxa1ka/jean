@@ -532,8 +532,8 @@ interface ChatUIState {
   // Worktree loading operations (commit, pr, review, merge, pull)
   worktreeLoadingOperations: Record<string, string | null>
 
-  // User-assigned labels per session (e.g. "Needs testing")
-  sessionLabels: Record<string, LabelData>
+  // User-assigned marks per session (e.g. "Needs testing"), in display order
+  sessionLabels: Record<string, LabelData[]>
 
   // Codex `/goal` long-horizon objectives keyed by sessionId (codex backend only)
   codexGoals: Record<string, string>
@@ -613,7 +613,8 @@ interface ChatUIState {
   getSessionStatusOverride: (sessionId: string) => ManualSessionStatus | null
 
   // Actions - Session label management (persisted)
-  setSessionLabel: (sessionId: string, label: LabelData | null) => void
+  /** Replace all marks of a session. An empty list removes the session key. */
+  setSessionLabels: (sessionId: string, labels: LabelData[]) => void
 
   // Actions - Plan file path management (persisted)
   setPlanFilePath: (sessionId: string, path: string | null) => void
@@ -1724,32 +1725,32 @@ export const useChatStore = create<ChatUIState>()(
         get().sessionStatusOverrides[sessionId] ?? null,
 
       // Session label management (persisted)
-      setSessionLabel: (sessionId, label) =>
+      setSessionLabels: (sessionId, labels) =>
         set(
           state => {
             const current = state.sessionLabels[sessionId]
-            if (label) {
-              if (
-                current?.name === label.name &&
-                current?.color === label.color &&
-                current?.pinned === label.pinned
-              ) {
-                return state
-              }
-              return {
-                sessionLabels: {
-                  ...state.sessionLabels,
-                  [sessionId]: label,
-                },
-              }
-            } else {
+            if (labels.length === 0) {
               if (!current) return state
               const { [sessionId]: _, ...rest } = state.sessionLabels
               return { sessionLabels: rest }
             }
+            if (
+              current?.length === labels.length &&
+              current.every(
+                (label, index) =>
+                  label.name === labels[index]?.name &&
+                  label.color === labels[index]?.color &&
+                  label.pinned === labels[index]?.pinned
+              )
+            ) {
+              return state
+            }
+            return {
+              sessionLabels: { ...state.sessionLabels, [sessionId]: labels },
+            }
           },
           undefined,
-          'setSessionLabel'
+          'setSessionLabels'
         ),
 
       // Plan file path management

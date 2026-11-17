@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { isBaseSession, type Worktree } from '@/types/projects'
 import { useProjectsStore } from '@/store/projects-store'
 import { useChatStore } from '@/store/chat-store'
+import { SessionMarkChips } from '@/components/chat/SessionMarkChips'
 import { useUIStore } from '@/store/ui-store'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { pushNeedsRemotePicker, useRemotePicker } from '@/hooks/useRemotePicker'
@@ -43,7 +44,12 @@ import {
 } from '@/services/chat'
 import { useQueryClient } from '@tanstack/react-query'
 import { useHoverIntent } from '@/hooks/useHoverIntent'
-import { isAskUserQuestion, isPlanToolCall, type Session } from '@/types/chat'
+import {
+  isAskUserQuestion,
+  isPlanToolCall,
+  NO_SESSION_LABELS,
+  type Session,
+} from '@/types/chat'
 import {
   createSessionCardDataCache,
   groupCardsByStatus,
@@ -202,8 +208,10 @@ const WorktreeSessionList = memo(function WorktreeSessionList({
   })
 
   const [labelSessionId, setLabelSessionId] = useState<string | null>(null)
-  const currentLabel = useChatStore(state =>
-    labelSessionId ? (state.sessionLabels[labelSessionId] ?? null) : null
+  const currentLabels = useChatStore(state =>
+    labelSessionId
+      ? (state.sessionLabels[labelSessionId] ?? NO_SESSION_LABELS)
+      : NO_SESSION_LABELS
   )
 
   if (sessionGroups.length === 0) return null
@@ -322,6 +330,7 @@ const WorktreeSessionList = memo(function WorktreeSessionList({
                           {`${config.label}: ${card.session.name || 'Untitled'}`}
                         </TooltipContent>
                       </Tooltip>
+                      <SessionMarkChips labels={card.labels} />
                     </button>
                   </SidebarSessionContextMenu>
                 )
@@ -371,7 +380,7 @@ const WorktreeSessionList = memo(function WorktreeSessionList({
         isOpen={!!labelSessionId}
         onClose={() => setLabelSessionId(null)}
         sessionId={labelSessionId}
-        currentLabel={currentLabel}
+        currentLabels={currentLabels}
       />
     </div>
   )

@@ -2059,6 +2059,9 @@ export interface LabelData {
   added_at?: number
 }
 
+/** Stable empty mark list for selectors (a new `[]` per call would re-render forever). */
+export const NO_SESSION_LABELS: LabelData[] = []
+
 /** All marks of a session, with a fallback to the legacy single `label`. */
 export function getSessionLabels(
   session: Pick<Session, 'labels' | 'label'>

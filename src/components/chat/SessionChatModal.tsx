@@ -64,7 +64,8 @@ import {
   performGitSync,
 } from '@/services/git-status'
 import { isBaseSession, type Project, type Worktree } from '@/types/projects'
-import type { Session } from '@/types/chat'
+import { NO_SESSION_LABELS, type Session } from '@/types/chat'
+import { SessionMarkChips } from './SessionMarkChips'
 import { isNativeApp } from '@/lib/environment'
 import { isImeComposingEvent } from '@/lib/ime-composition'
 import { toast } from 'sonner'
@@ -514,8 +515,10 @@ export const SessionChatModal = memo(function SessionChatModal({
     string | null
   >(null)
   const labelSessionId = labelTargetSessionId ?? currentSessionId
-  const currentLabel = useChatStore(state =>
-    labelSessionId ? (state.sessionLabels[labelSessionId] ?? null) : null
+  const currentLabels = useChatStore(state =>
+    labelSessionId
+      ? (state.sessionLabels[labelSessionId] ?? NO_SESSION_LABELS)
+      : NO_SESSION_LABELS
   )
   const namingSessionIds = useChatStore(state => state.namingSessionIds)
 
@@ -1523,6 +1526,9 @@ export const SessionChatModal = memo(function SessionChatModal({
                                 </TooltipContent>
                               </Tooltip>
                             )}
+                            {renamingSessionId !== session.id && (
+                              <SessionMarkChips labels={card.labels} />
+                            )}
                             {tab.collapsible &&
                               renamingSessionId !== session.id && (
                                 <button
@@ -1664,7 +1670,7 @@ export const SessionChatModal = memo(function SessionChatModal({
           setLabelTargetSessionId(null)
         }}
         sessionId={labelSessionId}
-        currentLabel={currentLabel}
+        currentLabels={currentLabels}
       />
 
       <CloseWorktreeDialog

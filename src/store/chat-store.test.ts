@@ -1999,6 +1999,46 @@ describe('ChatStore', () => {
     })
   })
 
+  describe('session marks', () => {
+    const review = { name: 'Review later', color: '#eab308' }
+    const blocked = { name: 'Blocked', color: '#ef4444' }
+
+    it('stores many marks and keeps state for the same list', () => {
+      const { setSessionLabels } = useChatStore.getState()
+      setSessionLabels('session-1', [review, blocked])
+      const first = useChatStore.getState()
+      expect(first.sessionLabels['session-1']).toEqual([review, blocked])
+
+      setSessionLabels('session-1', [{ ...review }, { ...blocked }])
+      expect(useChatStore.getState()).toBe(first)
+    })
+
+    it('changes state when order or color changes', () => {
+      const { setSessionLabels } = useChatStore.getState()
+      setSessionLabels('session-1', [review, blocked])
+      setSessionLabels('session-1', [blocked, review])
+      expect(useChatStore.getState().sessionLabels['session-1']).toEqual([
+        blocked,
+        review,
+      ])
+      setSessionLabels('session-1', [{ ...blocked, color: '#000000' }, review])
+      expect(
+        useChatStore.getState().sessionLabels['session-1']?.[0]?.color
+      ).toBe('#000000')
+    })
+
+    it('removes the key for an empty list and is a no-op when absent', () => {
+      const { setSessionLabels } = useChatStore.getState()
+      setSessionLabels('session-1', [review])
+      setSessionLabels('session-1', [])
+      const cleared = useChatStore.getState()
+      expect('session-1' in cleared.sessionLabels).toBe(false)
+
+      setSessionLabels('session-1', [])
+      expect(useChatStore.getState()).toBe(cleared)
+    })
+  })
+
   describe('pending files', () => {
     it('deduplicates pending files by source scope and relative path', () => {
       const { addPendingFile } = useChatStore.getState()
@@ -2187,9 +2227,9 @@ describe('ChatStore', () => {
         waitingForInput: false,
       }
       // The open-session refresh lands before the send invoke reaches the backend.
-      expect(store.applyRunStateSnapshot([idle], { requestedAt: 1_500 })).toEqual(
-        []
-      )
+      expect(
+        store.applyRunStateSnapshot([idle], { requestedAt: 1_500 })
+      ).toEqual([])
       expect(useChatStore.getState().sendingSessionIds.opening).toBe(true)
       // Absent from a full snapshot is the same case.
       store.applyRunStateSnapshot([], {
@@ -2275,7 +2315,9 @@ describe('ChatStore', () => {
         ],
         { ownsSession: () => true, requestedAt: Date.now() }
       )
-      expect(useChatStore.getState().sendingSessionIds.restarted).toBeUndefined()
+      expect(
+        useChatStore.getState().sendingSessionIds.restarted
+      ).toBeUndefined()
       expect(useChatStore.getState().runStateVersions.restarted).toBe(2)
     })
 
