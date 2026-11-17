@@ -12,6 +12,7 @@ import {
   type ContentBlock,
   type PermissionDenial,
   type LabelData,
+  NO_SESSION_LABELS,
   type CodexPermissionRequest,
   type OpenCodePermissionRequest,
   type CodexCommandApprovalRequest,
@@ -127,7 +128,8 @@ export interface SessionCardData {
   planFilePath: string | null
   planContent: string | null
   pendingPlanMessageId: string | null
-  label: LabelData | null
+  /** Session marks in display order (empty when none) */
+  labels: LabelData[]
 }
 
 export interface SessionCardProps {
@@ -277,7 +279,7 @@ export interface ChatStoreState {
     string,
     CodexDynamicToolCallRequest[]
   >
-  sessionLabels: Record<string, LabelData>
+  sessionLabels: Record<string, LabelData[]>
 }
 
 /**
@@ -737,8 +739,8 @@ export function computeSessionCardData(
     status = statusOverride
   }
 
-  // Label from Zustand store (populated from persisted data on load)
-  const label = sessionLabels[session.id] ?? null
+  // Marks from Zustand store (populated from persisted data on load)
+  const labels = sessionLabels[session.id] ?? NO_SESSION_LABELS
 
   return {
     session,
@@ -768,7 +770,7 @@ export function computeSessionCardData(
     planFilePath,
     planContent,
     pendingPlanMessageId,
-    label,
+    labels,
   }
 }
 

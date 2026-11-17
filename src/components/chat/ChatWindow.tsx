@@ -213,7 +213,11 @@ import { CHECK_GITHUB_ISSUES_PROMPT } from '@/lib/github-discovery-prompt'
 import { routeCurrentSessionMagicPrompt } from '@/lib/magic-prompt-pty'
 import { buildCommentAndCloseIssuePrompt } from '@/lib/github-issue-close-prompt'
 import { buildCommitInSessionPrompt } from '@/lib/commit-in-session-prompt'
-import { agentExecutionMode, type McpServerInfo } from '@/types/chat'
+import {
+  agentExecutionMode,
+  NO_SESSION_LABELS,
+  type McpServerInfo,
+} from '@/types/chat'
 import { useGitStatus } from '@/services/git-status'
 import { useRemotePicker } from '@/hooks/useRemotePicker'
 import {
@@ -453,9 +457,11 @@ const ChatWindowContent = memo(function ChatWindowContent({
   const completedDurationMs = useChatStore(state =>
     activeSessionId ? (state.completedDurations[activeSessionId] ?? null) : null
   )
-  // Session label for top-right badge
-  const sessionLabel = useChatStore(state =>
-    activeSessionId ? (state.sessionLabels[activeSessionId] ?? null) : null
+  // Session marks for the top-right badges
+  const sessionLabels = useChatStore(state =>
+    activeSessionId
+      ? (state.sessionLabels[activeSessionId] ?? NO_SESSION_LABELS)
+      : NO_SESSION_LABELS
   )
 
   // Function selectors - these return stable function references
@@ -2845,17 +2851,20 @@ const ChatWindowContent = memo(function ChatWindowContent({
                     <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
                       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
                         {/* Top-right session label - absolute positioned to avoid covering content */}
-                        {sessionLabel && (
-                          <div className="absolute top-2 right-4 z-20">
-                            <span
-                              className="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium"
-                              style={{
-                                backgroundColor: sessionLabel.color,
-                                color: getLabelTextColor(sessionLabel.color),
-                              }}
-                            >
-                              {sessionLabel.name}
-                            </span>
+                        {sessionLabels.length > 0 && (
+                          <div className="absolute top-2 right-4 z-20 flex gap-1">
+                            {sessionLabels.map(label => (
+                              <span
+                                key={label.name}
+                                className="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium"
+                                style={{
+                                  backgroundColor: label.color,
+                                  color: getLabelTextColor(label.color),
+                                }}
+                              >
+                                {label.name}
+                              </span>
+                            ))}
                           </div>
                         )}
                         <ChatSearchBar

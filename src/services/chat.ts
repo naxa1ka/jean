@@ -34,6 +34,7 @@ import type {
   PinnedTable,
   UserTurnOutcome,
 } from '@/types/chat'
+import { getSessionLabels } from '@/types/chat'
 import { isTauri, projectsQueryKeys } from '@/services/projects'
 import { hasBackendTransport } from '@/lib/environment'
 import { useChatStore } from '@/store/chat-store'
@@ -513,7 +514,7 @@ export async function prefetchSessions(
     const executionModeUpdates: Record<string, ExecutionMode> = {}
     const permissionModeUpdates: Record<string, PermissionMode> = {}
     const primarySurfaceUpdates: Record<string, 'chat' | 'terminal'> = {}
-    const labelUpdates: Record<string, LabelData> = {}
+    const labelUpdates: Record<string, LabelData[]> = {}
     const reviewResultsUpdates: Record<string, StoredReviewResults> = {}
     const answeredQuestionsUpdates: Record<string, Set<string>> = {}
     const submittedAnswersUpdates: Record<
@@ -558,8 +559,9 @@ export async function prefetchSessions(
       if (session.primary_surface) {
         primarySurfaceUpdates[session.id] = session.primary_surface
       }
-      if (session.label) {
-        labelUpdates[session.id] = session.label
+      const sessionMarks = getSessionLabels(session)
+      if (sessionMarks.length > 0) {
+        labelUpdates[session.id] = sessionMarks
       }
       if (session.review_results) {
         reviewResultsUpdates[session.id] = session.review_results

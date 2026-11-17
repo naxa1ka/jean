@@ -6,6 +6,7 @@ import { logger } from '@/lib/logger'
 import type { LabelData } from '@/types/chat'
 import { isSessionStateHydrating } from '@/lib/session-state-hydration'
 import { isBackendPersisting } from '@/lib/backend-persist-guard'
+import { getMarksLevelForResource } from '@/lib/marks-level'
 
 /**
  * Saves reviewing/waiting/status-override state immediately when it changes.
@@ -21,7 +22,7 @@ export function useImmediateSessionStateSave() {
   const prevReviewingRef = useRef<Record<string, boolean>>({})
   const prevStatusOverridesRef = useRef<Record<string, ManualSessionStatus>>({})
   const prevWaitingRef = useRef<Record<string, boolean>>({})
-  const prevLabelsRef = useRef<Record<string, LabelData>>({})
+  const prevLabelsRef = useRef<Record<string, LabelData[]>>({})
 
   useEffect(() => {
     const initialState = useChatStore.getState()
@@ -118,10 +119,7 @@ export function useImmediateSessionStateSave() {
           if (prevReviewingRef.current[sessionId] !== isReviewing) {
             // Skip if backend is persisting completion state for this session
             // Prefer status_override path when both change together.
-            if (
-              !isBackendPersisting(sessionId) &&
-              !statusOverridesChanged
-            ) {
+            if (!isBackendPersisting(sessionId) && !statusOverridesChanged) {
               saveSessionStatus(sessionId, sessionWorktreeMap, worktreePaths, {
                 isReviewing,
               })
@@ -130,10 +128,7 @@ export function useImmediateSessionStateSave() {
         }
         for (const sessionId of Object.keys(prevReviewingRef.current)) {
           if (!(sessionId in reviewingSessions)) {
-            if (
-              !isBackendPersisting(sessionId) &&
-              !statusOverridesChanged
-            ) {
+            if (!isBackendPersisting(sessionId) && !statusOverridesChanged) {
               saveSessionStatus(sessionId, sessionWorktreeMap, worktreePaths, {
                 isReviewing: false,
               })
@@ -188,20 +183,17 @@ export function useImmediateSessionStateSave() {
       }
 
       if (labelsChanged) {
-        for (const [sessionId, label] of Object.entries(sessionLabels)) {
-          if (
-            JSON.stringify(prevLabelsRef.current[sessionId]) !==
-            JSON.stringify(label)
-          ) {
+        for (const [sessionId, labels] of Object.entries(sessionLabels)) {
+          if (prevLabelsRef.current[sessionId] !== labels) {
             saveSessionStatus(sessionId, sessionWorktreeMap, worktreePaths, {
-              label,
+              labels,
             })
           }
         }
         for (const sessionId of Object.keys(prevLabelsRef.current)) {
           if (!(sessionId in sessionLabels)) {
             saveSessionStatus(sessionId, sessionWorktreeMap, worktreePaths, {
-              label: null,
+              labels: [],
             })
           }
         }
@@ -223,7 +215,7 @@ async function saveSessionStatus(
     isReviewing?: boolean
     statusOverride?: ManualSessionStatus | null
     waitingForInput?: boolean
-    label?: LabelData | null
+    labels?: LabelData[]
   }
 ) {
   const worktreeId = sessionWorktreeMap[sessionId]
@@ -237,10 +229,6 @@ async function saveSessionStatus(
   }
 
   try {
-    // Send explicit null to remove, or the label object to set
-    // Use undefined for label when we want to set/clear to avoid Tauri treating null as missing
-    const labelValue = updates.label ?? undefined
-    const clearLabel = 'label' in updates && updates.label === null
     // statusOverride: undefined = leave unchanged, null = clear, string = set
     const hasStatusOverride = 'statusOverride' in updates
     await invoke('update_session_state', {
@@ -254,10 +242,23 @@ async function saveSessionStatus(
         ? { statusOverride: updates.statusOverride ?? null }
         : {}),
       waitingForInput: updates.waitingForInput,
-      label: labelValue,
-      clearLabel,
+      ...markArgs(worktreeId, updates.labels),
     })
   } catch (error) {
     logger.error('Failed to save session status', { sessionId, error })
   }
+}
+
+/**
+ * Mark args for `update_session_state`. Servers with `marks >= 1` take the whole
+ * `labels` list; older servers take one `label` (the first mark) or `clearLabel`.
+ */
+function markArgs(
+  worktreeId: string,
+  labels: LabelData[] | undefined
+): Record<string, unknown> {
+  if (!labels) return {}
+  if (getMarksLevelForResource(worktreeId) >= 1) return { labels }
+  const [first] = labels
+  return first ? { label: first } : { clearLabel: true }
 }

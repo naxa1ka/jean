@@ -141,6 +141,7 @@ import { useTerminalStore } from '@/store/terminal-store'
 import { isBaseSession, type Project, type Worktree } from '@/types/projects'
 import { getEditorLabel, getTerminalLabel } from '@/types/preferences'
 import type { LabelData, Session, WorktreeSessions } from '@/types/chat'
+import { getSessionLabels } from '@/types/chat'
 import { countUnreadFailedWorkflowRuns } from '@/components/shared/workflow-run-utils'
 import { SessionChatModal } from '@/components/chat/SessionChatModal'
 import {
@@ -688,9 +689,10 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
     const seen = new Set<string>()
     const result: LabelData[] = []
     for (const card of cards) {
-      if (card.label && !seen.has(card.label.name)) {
-        seen.add(card.label.name)
-        result.push(card.label)
+      for (const label of card.labels) {
+        if (seen.has(label.name)) continue
+        seen.add(label.name)
+        result.push(label)
       }
     }
     return result
@@ -1531,12 +1533,12 @@ export function ProjectCanvasView({
             return (
               worktreeMatchesSearch ||
               session.name.toLowerCase().includes(normalizedSearchQuery) ||
-              (session.label?.name ?? '')
-                .toLowerCase()
-                .includes(normalizedSearchQuery) ||
-              (storeState.sessionLabels[session.id]?.name ?? '')
-                .toLowerCase()
-                .includes(normalizedSearchQuery)
+              getSessionLabels(session).some(label =>
+                label.name.toLowerCase().includes(normalizedSearchQuery)
+              ) ||
+              (storeState.sessionLabels[session.id] ?? []).some(label =>
+                label.name.toLowerCase().includes(normalizedSearchQuery)
+              )
             )
           })
         : sessions
@@ -1546,12 +1548,22 @@ export function ProjectCanvasView({
         sessionCardDataCache(session, storeState)
       )
 
-      // Sort: labeled first, grouped by label name, then unlabeled
+      // Sort: marked first, grouped by the sorted set of mark names, then unmarked
+      const markSortKeys = new Map(
+        cards.map(card => [
+          card,
+          card.labels
+            .map(label => label.name)
+            .sort()
+            .join('\u0000'),
+        ])
+      )
       cards.sort((a, b) => {
-        if (a.label && !b.label) return -1
-        if (!a.label && b.label) return 1
-        if (a.label && b.label) return a.label.name.localeCompare(b.label.name)
-        return 0
+        const aKey = markSortKeys.get(a) ?? ''
+        const bKey = markSortKeys.get(b) ?? ''
+        if (aKey && !bKey) return -1
+        if (!aKey && bKey) return 1
+        return aKey.localeCompare(bKey)
       })
 
       // Re-order by status group so flat array matches visual group order
@@ -4038,9 +4050,8 @@ export function ProjectCanvasView({
           setWorktreeLabelTarget(null)
         }}
         sessionId={null}
-        currentLabel={null}
         currentLabels={worktreeLabelTarget?.currentLabels ?? []}
-        mode="multi"
+        target="worktree"
         onApplyLabels={handleWorktreeLabelApply}
         onColorChange={handleLabelColorChange}
         onPinnedChange={handleLabelPinnedChange}

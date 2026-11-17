@@ -36,8 +36,8 @@ interface UseCanvasShortcutEventsResult {
   isLabelModalOpen: boolean
   /** Session ID for the label modal */
   labelModalSessionId: string | null
-  /** Current label for the label modal session */
-  labelModalCurrentLabel: LabelData | null
+  /** Current marks of the label modal session */
+  labelModalCurrentLabels: LabelData[]
   /** Close label modal */
   closeLabelModal: () => void
   /** Open label modal for a card */
@@ -63,17 +63,18 @@ export function useCanvasShortcutEvents({
   const [labelModalSessionId, setLabelModalSessionId] = useState<string | null>(
     null
   )
-  const [labelModalCurrentLabel, setLabelModalCurrentLabel] =
-    useState<LabelData | null>(null)
+  const [labelModalCurrentLabels, setLabelModalCurrentLabels] = useState<
+    LabelData[]
+  >([])
 
   const closeLabelModal = useCallback(() => {
     setLabelModalSessionId(null)
-    setLabelModalCurrentLabel(null)
+    setLabelModalCurrentLabels([])
   }, [])
 
   const handleOpenLabelModal = useCallback((card: SessionCardData) => {
     setLabelModalSessionId(card.session.id)
-    setLabelModalCurrentLabel(card.label)
+    setLabelModalCurrentLabels(card.labels)
   }, [])
 
   // Listen for keyboard shortcut events
@@ -150,7 +151,7 @@ export function useCanvasShortcutEvents({
 
     const handleToggleLabelEvent = () => {
       setLabelModalSessionId(selectedCard.session.id)
-      setLabelModalCurrentLabel(selectedCard.label)
+      setLabelModalCurrentLabels(selectedCard.labels)
     }
 
     window.addEventListener('approve-plan', handleApprovePlanEvent)
@@ -219,7 +220,7 @@ export function useCanvasShortcutEvents({
   return {
     isLabelModalOpen: !!labelModalSessionId,
     labelModalSessionId,
-    labelModalCurrentLabel,
+    labelModalCurrentLabels,
     closeLabelModal,
     handleOpenLabelModal,
   }

@@ -55,6 +55,7 @@ vi.mock('@/components/chat/session-card-utils', () => ({
   createSessionCardDataCache: () => (session: unknown) => ({
     session,
     status: 'idle',
+    labels: [],
   }),
   groupCardsByStatus: (cards: unknown[]) => [
     { key: 'idle', title: 'Idle', indicatorStatus: 'idle', cards },

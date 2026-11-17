@@ -16,6 +16,7 @@ import { Tag, Check, Pencil, Pin, Trash2 } from '@/components/icons/reicon'
 import { useChatStore } from '@/store/chat-store'
 import type { LabelData } from '@/types/chat'
 import { getLabelTextColor } from '@/lib/label-colors'
+import { getResourceServerId, useServerMarksLevel } from '@/lib/marks-level'
 
 const PRESET_LABELS = ['Needs testing']
 
@@ -36,14 +37,14 @@ interface LabelModalProps {
   isOpen: boolean
   onClose: () => void
   sessionId: string | null
-  currentLabel: LabelData | null
-  /** Multi-label mode current labels. */
-  currentLabels?: LabelData[]
-  /** Label selection mode. Sessions stay single; worktrees can use multi. */
-  mode?: 'single' | 'multi'
-  /** Custom apply handler. If provided, called instead of default setSessionLabel */
-  onApply?: (label: LabelData | null) => void
-  /** Custom multi-label apply handler. */
+  /** Current marks of the target, in display order. */
+  currentLabels: LabelData[]
+  /**
+   * What the picker marks. Worktrees always multi-select and show the pin toggle.
+   * Sessions multi-select when their server supports `marks >= 1`, else single select.
+   */
+  target?: 'session' | 'worktree'
+  /** Custom apply handler. Default (sessions): `setSessionLabels` in the chat store. */
   onApplyLabels?: (labels: LabelData[]) => void
   /** Additional labels to include in the custom labels list (e.g. worktree labels) */
   extraLabels?: LabelData[]
@@ -59,10 +60,8 @@ export function LabelModal({
   isOpen,
   onClose,
   sessionId,
-  currentLabel,
   currentLabels,
-  mode = 'single',
-  onApply,
+  target = 'session',
   onApplyLabels,
   extraLabels,
   onColorChange,
@@ -81,12 +80,28 @@ export function LabelModal({
   )
 
   const sessionLabels = useChatStore(state => state.sessionLabels)
+  const sessionWorktreeId = useChatStore(state =>
+    target === 'session' && sessionId
+      ? state.sessionWorktreeMap[sessionId]
+      : undefined
+  )
+  const sessionMarksLevel = useServerMarksLevel(
+    sessionWorktreeId ? getResourceServerId(sessionWorktreeId) : undefined
+  )
+  const mode: 'single' | 'multi' =
+    target === 'worktree' || sessionMarksLevel >= 1 ? 'multi' : 'single'
+
+  // Every mark in use on any session (flattened from the per-session lists)
+  const labelsInUse = useMemo(
+    () => Object.values(sessionLabels).flat(),
+    [sessionLabels]
+  )
 
   // Extract unique label names (from LabelData + extraLabels) for the dropdown list
   const customLabels = useMemo(() => {
     const presetSet = new Set(PRESET_LABELS)
     const unique = new Set<string>()
-    for (const label of Object.values(sessionLabels)) {
+    for (const label of labelsInUse) {
       if (!presetSet.has(label.name)) unique.add(label.name)
     }
     if (extraLabels) {
@@ -95,7 +110,7 @@ export function LabelModal({
       }
     }
     return [...unique].sort()
-  }, [sessionLabels, extraLabels])
+  }, [labelsInUse, extraLabels])
 
   const allLabelNames = useMemo(
     () => [...PRESET_LABELS, ...customLabels],
@@ -105,12 +120,7 @@ export function LabelModal({
   // Get the label data for current label (for preset labels, use default yellow)
   const getLabelData = useCallback(
     (name: string): LabelData => {
-      const selected =
-        mode === 'multi'
-          ? currentLabels?.find(l => l.name === name)
-          : currentLabel?.name === name
-            ? currentLabel
-            : undefined
+      const selected = currentLabels.find(l => l.name === name)
       // Check local color overrides first (instant feedback before async refetch)
       if (colorOverrides[name]) {
         return { ...(selected ?? { name }), color: colorOverrides[name] }
@@ -120,7 +130,7 @@ export function LabelModal({
         return extra?.pinned ? { ...selected, pinned: true } : selected
       }
       // Check if this label name exists in sessionLabels or extraLabels (has a color)
-      const existing = Object.values(sessionLabels).find(l => l.name === name)
+      const existing = labelsInUse.find(l => l.name === name)
       if (existing) {
         return extra?.pinned ? { ...existing, pinned: true } : existing
       }
@@ -128,38 +138,32 @@ export function LabelModal({
       // Preset labels get yellow by default
       return { name, color: '#eab308' }
     },
-    [
-      sessionLabels,
-      colorOverrides,
-      extraLabels,
-      currentLabel,
-      currentLabels,
-      mode,
-    ]
+    [labelsInUse, colorOverrides, extraLabels, currentLabels]
   )
 
   // Update all sessions that use a given label name to use a new color
   const updateAllSessionsWithLabel = useCallback(
     (labelName: string, newColor: string) => {
-      const { sessionLabels: allLabels, setSessionLabel } =
+      const { sessionLabels: allLabels, setSessionLabels } =
         useChatStore.getState()
-      for (const [sid, label] of Object.entries(allLabels)) {
-        if (label.name === labelName) {
-          setSessionLabel(sid, { name: labelName, color: newColor })
+      for (const [sid, labels] of Object.entries(allLabels)) {
+        if (labels.some(label => label.name === labelName)) {
+          setSessionLabels(
+            sid,
+            labels.map(label =>
+              label.name === labelName ? { ...label, color: newColor } : label
+            )
+          )
         }
       }
     },
     []
   )
 
+  // Single select (old servers) keeps only the first mark
   const selectedLabels = useMemo(
-    () =>
-      mode === 'multi'
-        ? (currentLabels ?? [])
-        : currentLabel
-          ? [currentLabel]
-          : [],
-    [mode, currentLabels, currentLabel]
+    () => (mode === 'multi' ? currentLabels : currentLabels.slice(0, 1)),
+    [mode, currentLabels]
   )
 
   const isLabelSelected = useCallback(
@@ -167,35 +171,34 @@ export function LabelModal({
     [selectedLabels]
   )
 
+  const commitLabels = useCallback(
+    (labels: LabelData[]) => {
+      if (onApplyLabels) {
+        onApplyLabels(labels)
+      } else if (sessionId) {
+        useChatStore.getState().setSessionLabels(sessionId, labels)
+      }
+    },
+    [onApplyLabels, sessionId]
+  )
+
+  /** Toggle one mark (multi), set it (single), or clear all marks (`null`). */
   const applyLabel = useCallback(
     (labelData: LabelData | null) => {
       if (mode === 'multi') {
-        const next = labelData
-          ? isLabelSelected(labelData.name)
-            ? selectedLabels.filter(label => label.name !== labelData.name)
-            : [...selectedLabels, labelData]
-          : []
-        onApplyLabels?.(next)
+        commitLabels(
+          labelData
+            ? isLabelSelected(labelData.name)
+              ? selectedLabels.filter(label => label.name !== labelData.name)
+              : [...selectedLabels, labelData]
+            : []
+        )
         return
       }
-      if (onApply) {
-        onApply(labelData)
-        onClose()
-        return
-      }
-      if (!sessionId) return
-      useChatStore.getState().setSessionLabel(sessionId, labelData)
+      commitLabels(labelData ? [labelData] : [])
       onClose()
     },
-    [
-      mode,
-      selectedLabels,
-      isLabelSelected,
-      onApplyLabels,
-      onApply,
-      onClose,
-      sessionId,
-    ]
+    [mode, selectedLabels, isLabelSelected, commitLabels, onClose]
   )
 
   // Start editing an existing label's color
@@ -297,7 +300,7 @@ export function LabelModal({
   const togglePinned = useCallback(
     (labelData: LabelData, e: React.MouseEvent) => {
       e.stopPropagation()
-      if (mode !== 'multi') return
+      if (target !== 'worktree') return
 
       if (onPinnedChange) {
         onPinnedChange(labelData, !labelData.pinned)
@@ -309,9 +312,9 @@ export function LabelModal({
           ? { ...label, pinned: !label.pinned }
           : label
       )
-      onApplyLabels?.(next)
+      commitLabels(next)
     },
-    [mode, onApplyLabels, onPinnedChange, selectedLabels]
+    [target, commitLabels, onPinnedChange, selectedLabels]
   )
 
   const deleteLabel = useCallback(
@@ -337,7 +340,11 @@ export function LabelModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Tag className="h-4 w-4" />
-            {mode === 'multi' ? 'Worktree Labels' : 'Session Label'}
+            {target === 'worktree'
+              ? 'Worktree Labels'
+              : mode === 'multi'
+                ? 'Session Labels'
+                : 'Session Label'}
           </DialogTitle>
           <DialogDescription>
             {editingLabelName
@@ -449,7 +456,7 @@ export function LabelModal({
                       style={{ backgroundColor: labelData.color }}
                     />
                     <span className="flex-1 truncate">{labelName}</span>
-                    {mode === 'multi' && (
+                    {target === 'worktree' && (
                       <Pin
                         className={`h-3 w-3 transition-opacity mr-1 ${
                           labelData.pinned
