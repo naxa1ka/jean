@@ -179,6 +179,18 @@ pub async fn dispatch_command(
             emit_cache_invalidation(app, &["preferences"]);
             Ok(Value::Null)
         }
+        "set_mark_definitions" => {
+            let definitions = from_field(&args, "definitions")?;
+            let result = crate::set_mark_definitions(app.clone(), definitions).await?;
+            emit_cache_invalidation(app, &["preferences"]);
+            to_value(result)
+        }
+        "merge_mark_definitions" => {
+            let definitions = from_field(&args, "definitions")?;
+            let result = crate::merge_mark_definitions(app.clone(), definitions).await?;
+            emit_cache_invalidation(app, &["preferences"]);
+            to_value(result)
+        }
         "set_window_vibrancy" => {
             let enabled: bool = from_field(&args, "enabled")?;
             crate::set_window_vibrancy(app.clone(), enabled).await?;

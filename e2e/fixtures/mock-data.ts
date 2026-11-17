@@ -82,6 +82,11 @@ export const mockPreferences = {
   web_access_token: '',
   mcp_servers_enabled: false,
   experimental_features: {},
+  mark_definitions: [
+    { name: 'Review later', color: '#3b82f6', icon: '🔖', tracked: true },
+    { name: 'Needs testing', color: '#eab308', icon: null, tracked: false },
+  ],
+  marks_migrated: true,
 }
 
 export const mockUIState = {

@@ -88,6 +88,7 @@ import { useCodexCodeModeHostRepair } from './hooks/useCodexCodeModeHostRepair'
 import { useServerQuerySync } from './hooks/useServerQuerySync'
 import { useBackgroundInvestigation } from './hooks/useBackgroundInvestigation'
 import { useMagicPromptAutoDefaults } from './hooks/useMagicPromptAutoDefaults'
+import { useMarksClientMerge } from './hooks/useMarksClientMerge'
 import useStreamingEvents from './components/chat/hooks/useStreamingEvents'
 import { hydrateRunningSnapshot } from './lib/hydrate-running-snapshot'
 import { preloadAllSounds } from './lib/sounds'
@@ -894,6 +895,9 @@ function App() {
 
   // One-time: detect installed backends and set magic prompt defaults accordingly
   useMagicPromptAutoDefaults()
+
+  // One-time: merge this client's local labels and pins into each server's mark list
+  useMarksClientMerge()
 
   // A fresh page bootstrap is faster and more reliable than repairing stale
   // in-memory state. The backend keeps long-running jobs and

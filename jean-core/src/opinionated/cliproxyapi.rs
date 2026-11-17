@@ -44,7 +44,10 @@ async fn detach_saved_profiles(app: &AppHandle) -> Result<(), String> {
         }
     }
     if detach_profiles(&mut preferences) {
-        crate::save_preferences(app.clone(), preferences).await?;
+        crate::mutate_preferences(app, |current| {
+            detach_profiles(current);
+            Ok(())
+        })?;
     }
     Ok(())
 }

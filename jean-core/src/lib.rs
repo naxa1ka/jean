@@ -467,6 +467,13 @@ pub struct AppPreferences {
     /// server uses the same value. Jean MCP is unrelated and stays enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_default_host: Option<String>,
+    /// Managed mark list of this server, shared by all projects. Order = display order.
+    /// Written only by `set_mark_definitions` / `merge_mark_definitions` and the migration.
+    #[serde(default = "chat::types::default_mark_definitions")]
+    pub mark_definitions: Vec<chat::types::MarkDefinition>,
+    /// True after the one-time server migration added all used labels to `mark_definitions`.
+    #[serde(default)]
+    pub marks_migrated: bool,
 }
 
 fn default_finished_session_animation_enabled() -> bool {
@@ -3707,6 +3714,8 @@ impl Default for AppPreferences {
             commandcode_max_turns: default_commandcode_max_turns(),
             agent_browser_enabled: default_agent_browser_enabled(),
             browser_default_host: None,
+            mark_definitions: chat::types::default_mark_definitions(),
+            marks_migrated: false,
         }
     }
 }
@@ -4132,14 +4141,14 @@ pub fn load_preferences_sync(app: &AppHandle) -> Result<AppPreferences, String> 
     Ok(preferences)
 }
 
-async fn load_preferences(app: AppHandle) -> Result<AppPreferences, String> {
+fn load_preferences_unlocked(app: &AppHandle) -> Result<AppPreferences, String> {
     log::trace!("Loading preferences from disk");
-    let prefs_path = get_preferences_path(&app)?;
+    let prefs_path = get_preferences_path(app)?;
 
     if !prefs_path.exists() {
         log::trace!("Preferences file not found, using defaults");
         let mut preferences = AppPreferences::default();
-        if maybe_auto_select_system_cli_preferences(&app, &mut preferences, None) {
+        if maybe_auto_select_system_cli_preferences(app, &mut preferences, None) {
             if let Ok(json) = serde_json::to_string_pretty(&preferences) {
                 let _ = std::fs::write(&prefs_path, json);
                 log::trace!("Saved preferences after CLI PATH auto-detection");
@@ -4197,7 +4206,7 @@ async fn load_preferences(app: AppHandle) -> Result<AppPreferences, String> {
         preferences.branch_naming_model = default_branch_naming_model();
         needs_resave = true;
     }
-    if maybe_auto_select_system_cli_preferences(&app, &mut preferences, Some(&raw_preferences)) {
+    if maybe_auto_select_system_cli_preferences(app, &mut preferences, Some(&raw_preferences)) {
         needs_resave = true;
     }
     if preferences.session_naming_model == "haiku" {
@@ -4258,7 +4267,54 @@ async fn load_preferences(app: AppHandle) -> Result<AppPreferences, String> {
     Ok(preferences)
 }
 
-async fn save_preferences(app: AppHandle, mut preferences: AppPreferences) -> Result<(), String> {
+/// Serializes every preferences read-modify-write (and the migration resave in
+/// load), so parallel writers do not drop each other's changes.
+static PREFERENCES_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_preferences() -> std::sync::MutexGuard<'static, ()> {
+    PREFERENCES_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+async fn load_preferences(app: AppHandle) -> Result<AppPreferences, String> {
+    let _lock = lock_preferences();
+    load_preferences_unlocked(&app)
+}
+
+/// The only way to change preferences on disk: lock, load, run `mutate`, save.
+/// When `mutate` returns `Err`, nothing is written.
+pub fn mutate_preferences<T>(
+    app: &AppHandle,
+    mutate: impl FnOnce(&mut AppPreferences) -> Result<T, String>,
+) -> Result<T, String> {
+    let _lock = lock_preferences();
+    let current = load_preferences_unlocked(app)?;
+    let mut next = current.clone();
+    let output = mutate(&mut next)?;
+    write_preferences_unlocked(app, &current, next)?;
+    Ok(output)
+}
+
+/// Replace the whole preferences object (a client save). The server-managed
+/// mark list keys are kept, so a stale or older client cannot overwrite them.
+async fn save_preferences(app: AppHandle, preferences: AppPreferences) -> Result<(), String> {
+    mutate_preferences(&app, |current| {
+        let mark_definitions = std::mem::take(&mut current.mark_definitions);
+        let marks_migrated = current.marks_migrated;
+        *current = preferences;
+        current.mark_definitions = mark_definitions;
+        current.marks_migrated = marks_migrated;
+        Ok(())
+    })
+}
+
+/// Validate and write `preferences`. Call only while holding the preferences lock.
+fn write_preferences_unlocked(
+    app: &AppHandle,
+    old_prefs: &AppPreferences,
+    mut preferences: AppPreferences,
+) -> Result<(), String> {
     // Validate before this command changes any related persisted state.
     validate_theme(&preferences.theme)?;
     preferences.browser_default_host =
@@ -4267,25 +4323,23 @@ async fn save_preferences(app: AppHandle, mut preferences: AppPreferences) -> Re
     // Keep per-project Sentry region caches consistent with the global token:
     // a global set/change/remove invalidates the cached region host on projects that
     // inherit it (no per-project token), mirroring the per-project settings path.
-    if let Ok(old_prefs) = load_preferences(app.clone()).await {
-        if old_prefs.sentry_auth_token.as_deref() != preferences.sentry_auth_token.as_deref() {
-            let mut data = crate::projects::storage::load_projects_data(&app)?;
-            let mut changed = false;
-            for project in &mut data.projects {
-                if project.sentry_auth_token.is_none() && project.sentry_base_url.is_some() {
-                    project.sentry_base_url = None;
-                    changed = true;
-                }
+    if old_prefs.sentry_auth_token.as_deref() != preferences.sentry_auth_token.as_deref() {
+        let mut data = crate::projects::storage::load_projects_data(app)?;
+        let mut changed = false;
+        for project in &mut data.projects {
+            if project.sentry_auth_token.is_none() && project.sentry_base_url.is_some() {
+                project.sentry_base_url = None;
+                changed = true;
             }
-            if changed {
-                log::trace!("Global Sentry token changed; clearing inherited region caches");
-                crate::projects::storage::save_projects_data(&app, &data)?;
-            }
+        }
+        if changed {
+            log::trace!("Global Sentry token changed; clearing inherited region caches");
+            crate::projects::storage::save_projects_data(app, &data)?;
         }
     }
 
     log::trace!("Saving preferences to disk");
-    let prefs_path = get_preferences_path(&app)?;
+    let prefs_path = get_preferences_path(app)?;
 
     // Write any non-empty settings_json to standalone files before clearing
     for profile in &preferences.custom_cli_profiles {
@@ -4344,20 +4398,94 @@ async fn save_preferences(app: AppHandle, mut preferences: AppPreferences) -> Re
     Ok(())
 }
 
-/// Atomically patch preferences: loads current from disk, merges patch on top, saves.
-/// This avoids race conditions when multiple components save concurrently.
-async fn patch_preferences(app: AppHandle, patch: Value) -> Result<(), String> {
-    let current = load_preferences(app.clone()).await?;
+/// Preferences that only the server changes (mark list commands and migration).
+/// Client saves and patches never overwrite them.
+const SERVER_MANAGED_PREFERENCE_KEYS: &[&str] = &["mark_definitions", "marks_migrated"];
+
+fn apply_preferences_patch(current: &mut AppPreferences, patch: &Value) -> Result<(), String> {
     let mut current_json =
-        serde_json::to_value(&current).map_err(|e| format!("Serialize error: {e}"))?;
+        serde_json::to_value(&*current).map_err(|e| format!("Serialize error: {e}"))?;
     if let (Some(base), Some(patch_obj)) = (current_json.as_object_mut(), patch.as_object()) {
         for (key, value) in patch_obj {
+            if SERVER_MANAGED_PREFERENCE_KEYS.contains(&key.as_str()) {
+                continue;
+            }
             base.insert(key.clone(), value.clone());
         }
     }
-    let merged: AppPreferences =
-        serde_json::from_value(current_json).map_err(|e| format!("Merge error: {e}"))?;
-    save_preferences(app, merged).await
+    *current = serde_json::from_value(current_json).map_err(|e| format!("Merge error: {e}"))?;
+    Ok(())
+}
+
+/// Atomically patch preferences: loads current from disk, merges patch on top, saves.
+/// This avoids race conditions when multiple components save concurrently.
+async fn patch_preferences(app: AppHandle, patch: Value) -> Result<(), String> {
+    mutate_preferences(&app, |current| apply_preferences_patch(current, &patch))
+}
+
+/// Replace the server mark list (strict validation). The order is the display order.
+pub async fn set_mark_definitions(
+    app: AppHandle,
+    definitions: Vec<chat::types::MarkDefinition>,
+) -> Result<Vec<chat::types::MarkDefinition>, String> {
+    let definitions = chat::types::validate_mark_definitions(definitions)?;
+    mutate_preferences(&app, |prefs| {
+        prefs.mark_definitions = definitions;
+        Ok(prefs.mark_definitions.clone())
+    })
+}
+
+/// Add new names to the server mark list. Existing entries keep their place and values.
+pub async fn merge_mark_definitions(
+    app: AppHandle,
+    definitions: Vec<chat::types::MarkDefinition>,
+) -> Result<Vec<chat::types::MarkDefinition>, String> {
+    mutate_preferences(&app, |prefs| {
+        chat::types::merge_mark_definitions_into(&mut prefs.mark_definitions, definitions);
+        Ok(prefs.mark_definitions.clone())
+    })
+}
+
+/// Labels in use on worktrees, then on sessions, in that order (as mark list entries).
+fn collect_used_mark_definitions(
+    app: &AppHandle,
+) -> Result<Vec<chat::types::MarkDefinition>, String> {
+    let as_definition = |label: &chat::types::LabelData| chat::types::MarkDefinition {
+        name: label.name.clone(),
+        color: label.color.clone(),
+        icon: None,
+        tracked: false,
+    };
+    let mut used = Vec::new();
+    let projects = projects::storage::load_projects_data(app)?;
+    for worktree in &projects.worktrees {
+        used.extend(worktree.labels.iter().map(as_definition));
+    }
+    for session_id in chat::storage::list_all_session_ids(app)? {
+        match chat::storage::load_metadata(app, &session_id) {
+            Ok(Some(metadata)) => used.extend(metadata.labels.iter().map(as_definition)),
+            Ok(None) => {}
+            Err(error) => log::warn!("Mark migration skips session {session_id}: {error}"),
+        }
+    }
+    Ok(used)
+}
+
+/// One-time server migration: add every label in use on worktrees and sessions to
+/// the mark list. Safe to run again (it returns at once after the first success).
+/// It does not touch pins: clients own `pinned_labels` in ui-state.json.
+pub fn migrate_mark_definitions(app: &AppHandle) -> Result<(), String> {
+    if load_preferences_sync(app)?.marks_migrated {
+        return Ok(());
+    }
+    let used = collect_used_mark_definitions(app)?;
+    mutate_preferences(app, |prefs| {
+        if !prefs.marks_migrated {
+            chat::types::merge_mark_definitions_into(&mut prefs.mark_definitions, used);
+            prefs.marks_migrated = true;
+        }
+        Ok(())
+    })
 }
 
 const SERVER_PREFERENCES_SCHEMA_VERSION: u32 = 1;
@@ -4444,10 +4572,6 @@ pub async fn update_server_preferences(
     patch: Value,
     expected_revision: String,
 ) -> Result<ServerPreferencesEnvelope, String> {
-    let current = get_server_preferences(app.clone()).await?;
-    if current.revision != expected_revision {
-        return Err("Server preferences changed; reload settings and try again".to_string());
-    }
     let patch_object = patch
         .as_object()
         .ok_or("Preference patch must be an object")?;
@@ -4457,7 +4581,15 @@ pub async fn update_server_preferences(
     {
         return Err(format!("'{key}' is a client-only preference"));
     }
-    patch_preferences(app.clone(), patch).await?;
+    // Check the revision under the same lock as the write, so no other writer
+    // can slip in between the check and the patch.
+    mutate_preferences(&app, |current| {
+        let revision = preferences_revision(&server_preferences_value(current)?).to_string();
+        if revision != expected_revision {
+            return Err("Server preferences changed; reload settings and try again".to_string());
+        }
+        apply_preferences_patch(current, &patch)
+    })?;
     get_server_preferences(app).await
 }
 
@@ -4509,7 +4641,7 @@ pub async fn get_server_capabilities() -> Result<ServerCapabilitiesEnvelope, Str
         api_protocol: 1,
         api_protocol_min: 1,
         capabilities: std::collections::BTreeMap::from([
-            ("marks".to_string(), 1),
+            ("marks".to_string(), 2),
             ("multiServerTransport".to_string(), 1),
         ]),
         magic_prompts: prompts
@@ -4524,6 +4656,189 @@ pub async fn get_server_capabilities() -> Result<ServerCapabilitiesEnvelope, Str
 }
 
 #[cfg(test)]
+mod mark_definitions_tests {
+    use super::*;
+    use crate::chat::types::{default_mark_definitions, LabelData, MarkDefinition};
+
+    fn test_app() -> (tempfile::TempDir, AppHandle) {
+        let temp = tempfile::tempdir().unwrap();
+        let app = AppHandle::new(temp.path().to_path_buf(), temp.path().to_path_buf()).unwrap();
+        (temp, app)
+    }
+
+    /// Write a preferences file without the mark list fields (a file from an older version).
+    fn write_old_preferences(app: &AppHandle) {
+        let mut value = serde_json::to_value(AppPreferences::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("mark_definitions");
+        object.remove("marks_migrated");
+        std::fs::write(get_preferences_path(app).unwrap(), value.to_string()).unwrap();
+    }
+
+    fn label(name: &str, color: &str) -> LabelData {
+        LabelData {
+            name: name.to_string(),
+            color: color.to_string(),
+            pinned: false,
+            added_at: None,
+        }
+    }
+
+    fn names(list: &[MarkDefinition]) -> Vec<String> {
+        list.iter().map(|d| d.name.clone()).collect()
+    }
+
+    fn save_worktree_labels(app: &AppHandle, labels: Vec<LabelData>) {
+        // The loader drops worktrees whose path does not exist.
+        let path = get_preferences_path(app).unwrap();
+        let path = path.parent().unwrap().to_string_lossy().to_string();
+        let mut worktree: crate::projects::types::Worktree =
+            serde_json::from_value(serde_json::json!({
+                "id": "wt-1", "project_id": "project", "name": "base",
+                "path": path, "branch": "main",
+                "created_at": 1, "session_type": "base"
+            }))
+            .unwrap();
+        worktree.labels = labels;
+        crate::projects::storage::save_projects_data(
+            app,
+            &crate::projects::types::ProjectsData {
+                projects: vec![],
+                worktrees: vec![worktree],
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mark_definitions_old_preferences_file_loads_with_seed() {
+        let (_temp, app) = test_app();
+        write_old_preferences(&app);
+        let prefs = load_preferences_sync(&app).unwrap();
+        assert_eq!(prefs.mark_definitions, default_mark_definitions());
+        assert!(!prefs.marks_migrated);
+        assert_eq!(
+            names(&prefs.mark_definitions),
+            vec!["Review later", "Needs testing"]
+        );
+        assert!(prefs.mark_definitions[0].tracked);
+        assert_eq!(prefs.mark_definitions[0].icon.as_deref(), Some("🔖"));
+    }
+
+    #[tokio::test]
+    async fn mark_definitions_migration_collects_labels_once() {
+        let (_temp, app) = test_app();
+        write_old_preferences(&app);
+        save_worktree_labels(
+            &app,
+            vec![label("Bug", "#ff0000"), label("review LATER", "#000")],
+        );
+        let mut metadata = crate::chat::types::SessionMetadata::new(
+            "session-1".to_string(),
+            "wt-1".to_string(),
+            "s".to_string(),
+            0,
+        );
+        metadata.labels = vec![label("Blocked", "nope"), label("bug", "#00ff00")];
+        crate::chat::storage::save_metadata(&app, &metadata).unwrap();
+
+        migrate_mark_definitions(&app).unwrap();
+
+        let prefs = load_preferences_sync(&app).unwrap();
+        assert!(prefs.marks_migrated);
+        assert_eq!(
+            names(&prefs.mark_definitions),
+            vec!["Review later", "Needs testing", "Bug", "Blocked"]
+        );
+        assert_eq!(prefs.mark_definitions[0], default_mark_definitions()[0]);
+        assert_eq!(prefs.mark_definitions[2].color, "#ff0000");
+        assert_eq!(prefs.mark_definitions[3].color, "#eab308");
+
+        // A second run changes nothing, even when new labels are in use now.
+        save_worktree_labels(&app, vec![label("Later label", "#123456")]);
+        let before = std::fs::read_to_string(get_preferences_path(&app).unwrap()).unwrap();
+        migrate_mark_definitions(&app).unwrap();
+        let after = std::fs::read_to_string(get_preferences_path(&app).unwrap()).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn mark_definitions_commands_and_client_writes_keep_the_list() {
+        let (_temp, app) = test_app();
+        write_old_preferences(&app);
+        let bug = MarkDefinition {
+            name: "Bug".to_string(),
+            color: "#ff0000".to_string(),
+            icon: None,
+            tracked: false,
+        };
+        let list = set_mark_definitions(app.clone(), vec![bug.clone()])
+            .await
+            .unwrap();
+        assert_eq!(list, vec![bug.clone()]);
+        assert!(
+            set_mark_definitions(app.clone(), vec![bug.clone(), bug.clone()])
+                .await
+                .is_err()
+        );
+
+        let list = merge_mark_definitions(app.clone(), default_mark_definitions())
+            .await
+            .unwrap();
+        assert_eq!(names(&list), vec!["Bug", "Review later", "Needs testing"]);
+
+        // An older client saves its full object (seed list) and patches the key: no effect.
+        save_preferences(app.clone(), AppPreferences::default())
+            .await
+            .unwrap();
+        patch_preferences(
+            app.clone(),
+            serde_json::json!({ "mark_definitions": [], "marks_migrated": true, "theme": "light" }),
+        )
+        .await
+        .unwrap();
+        let prefs = load_preferences_sync(&app).unwrap();
+        assert_eq!(prefs.mark_definitions, list);
+        assert!(!prefs.marks_migrated);
+        assert_eq!(prefs.theme, "light");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mark_definitions_parallel_mutations_both_persist() {
+        let (_temp, app) = test_app();
+        write_old_preferences(&app);
+        let runtime = tokio::runtime::Handle::current();
+        let threads: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|prefix| {
+                let app = app.clone();
+                let runtime = runtime.clone();
+                std::thread::spawn(move || {
+                    let _guard = runtime.enter();
+                    for i in 0..15 {
+                        mutate_preferences(&app, |prefs| {
+                            prefs.known_mcp_servers.push(format!("{prefix}{i}"));
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let prefs = load_preferences_sync(&app).unwrap();
+        for prefix in ["a", "b"] {
+            for i in 0..15 {
+                let key = format!("{prefix}{i}");
+                assert!(prefs.known_mcp_servers.contains(&key), "lost {key}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod server_capabilities_tests {
     #[tokio::test]
     async fn server_capabilities_publish_protocol_contract() {
@@ -4532,7 +4847,7 @@ mod server_capabilities_tests {
         assert_eq!(value["apiProtocol"], 1);
         assert_eq!(value["apiProtocolMin"], 1);
         assert_eq!(value["capabilities"]["multiServerTransport"], 1);
-        assert_eq!(value["capabilities"]["marks"], 1);
+        assert_eq!(value["capabilities"]["marks"], 2);
         assert!(value.get("featureSurfaces").is_none());
         assert!(value.get("magicPrompts").is_some());
     }
@@ -5008,14 +5323,7 @@ pub async fn start_http_server(
     // Generate or load token
     let token = match prefs.http_server_token {
         Some(t) if !t.is_empty() => t,
-        _ => {
-            let new_token = http_server::auth::generate_token();
-            // Persist the token
-            let mut prefs = prefs.clone();
-            prefs.http_server_token = Some(new_token.clone());
-            save_preferences(app.clone(), prefs).await?;
-            new_token
-        }
+        _ => ensure_http_server_token(&app)?,
     };
 
     // Check if already running
@@ -5109,14 +5417,7 @@ async fn start_http_server_headless(
     } else {
         match prefs.http_server_token {
             Some(t) if !t.is_empty() => t,
-            _ => {
-                let new_token = http_server::auth::generate_token();
-                // Persist auto-generated tokens
-                let mut prefs = prefs.clone();
-                prefs.http_server_token = Some(new_token.clone());
-                save_preferences(app.clone(), prefs).await?;
-                new_token
-            }
+            _ => ensure_http_server_token(&app)?,
         }
     };
 
@@ -5179,10 +5480,23 @@ fn validate_http_bind_host(host: String) -> Result<String, String> {
 
 async fn regenerate_http_token(app: AppHandle) -> Result<String, String> {
     let new_token = http_server::auth::generate_token();
-    let mut prefs = load_preferences(app.clone()).await?;
-    prefs.http_server_token = Some(new_token.clone());
-    save_preferences(app.clone(), prefs).await?;
+    mutate_preferences(&app, |prefs| {
+        prefs.http_server_token = Some(new_token.clone());
+        Ok(())
+    })?;
     Ok(new_token)
+}
+
+/// Return the saved HTTP server token, or generate and persist one.
+fn ensure_http_server_token(app: &AppHandle) -> Result<String, String> {
+    mutate_preferences(app, |prefs| {
+        if let Some(token) = prefs.http_server_token.clone().filter(|t| !t.is_empty()) {
+            return Ok(token);
+        }
+        let token = http_server::auth::generate_token();
+        prefs.http_server_token = Some(token.clone());
+        Ok(token)
+    })
 }
 
 async fn sync_jean_mcp_socket_from_preferences(
@@ -5670,6 +5984,14 @@ pub fn initialize_runtime(context: &RuntimeContext) -> Result<(), String> {
         }
     });
 
+    // Move all labels in use into the server mark list, once.
+    let marks_context = context.clone();
+    async_runtime::spawn_blocking(move || {
+        if let Err(error) = migrate_mark_definitions(&marks_context) {
+            log::error!("Mark list migration failed: {error}");
+        }
+    });
+
     // request_secret files live 24h. Sweep at startup and then hourly.
     let secrets_context = context.clone();
     async_runtime::spawn(async move {
@@ -6074,7 +6396,7 @@ pub async fn run_server() -> Result<(), String> {
     let context = RuntimeContext::from_environment()?;
     initialize_runtime(&context)?;
 
-    let mut preferences = load_preferences(context.clone()).await.unwrap_or_default();
+    let preferences = load_preferences(context.clone()).await.unwrap_or_default();
     if let Err(error) = sync_jean_mcp_socket_from_preferences(context.clone(), &preferences).await {
         log::warn!("Failed to start Jean MCP proxy socket: {error}");
     }
@@ -6099,8 +6421,10 @@ pub async fn run_server() -> Result<(), String> {
     });
 
     if !explicit_token && preferences.http_server_token.as_deref() != Some(token.as_str()) {
-        preferences.http_server_token = Some(token.clone());
-        save_preferences(context.clone(), preferences).await?;
+        mutate_preferences(&context, |prefs| {
+            prefs.http_server_token = Some(token.clone());
+            Ok(())
+        })?;
     }
 
     let handle =

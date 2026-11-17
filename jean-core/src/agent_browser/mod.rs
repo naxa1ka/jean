@@ -1031,48 +1031,29 @@ fn enable_in_preferences(
     app: &AppHandle,
     results: &[AgentBrowserInstallResult],
 ) -> Result<(), String> {
-    let path = crate::get_preferences_path(app)?;
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("Failed to read preferences: {e}")),
-    };
-    let mut prefs: Value =
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse preferences: {e}"))?;
-
-    let Some(obj) = prefs.as_object_mut() else {
+    // No preferences file yet: nothing to enable (defaults apply later).
+    if !crate::get_preferences_path(app)?.exists() {
         return Ok(());
-    };
-
-    if !obj.contains_key("default_enabled_mcp_servers") {
-        obj.insert("default_enabled_mcp_servers".into(), json!([]));
     }
-    if !obj.contains_key("known_mcp_servers") {
-        obj.insert("known_mcp_servers".into(), json!([]));
-    }
-
     let keys: Vec<String> = results
         .iter()
         .filter(|r| r.status == "installed")
         .map(|r| format!("{}:{MCP_SERVER_NAME}", r.backend))
         .collect();
 
-    for field in ["default_enabled_mcp_servers", "known_mcp_servers"] {
-        let Some(arr) = obj.get_mut(field).and_then(|v| v.as_array_mut()) else {
-            continue;
-        };
-        for key in &keys {
-            let key_val = Value::String(key.clone());
-            if !arr.iter().any(|v| v == &key_val) {
-                arr.push(key_val);
+    crate::mutate_preferences(app, |prefs| {
+        for list in [
+            &mut prefs.default_enabled_mcp_servers,
+            &mut prefs.known_mcp_servers,
+        ] {
+            for key in &keys {
+                if !list.contains(key) {
+                    list.push(key.clone());
+                }
             }
         }
-    }
-
-    let updated = serde_json::to_string_pretty(&prefs)
-        .map_err(|e| format!("Failed to serialize preferences: {e}"))?;
-    std::fs::write(&path, updated).map_err(|e| format!("Failed to write preferences: {e}"))?;
-    Ok(())
+        Ok(())
+    })
 }
 
 fn install_claude(entry: &McpEntry) -> Result<(PathBuf, Option<PathBuf>), String> {
