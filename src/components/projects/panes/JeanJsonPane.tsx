@@ -133,6 +133,7 @@ function JeanJsonForm({
         // Preserve any fields this pane doesn't manage (e.g. provider binding).
         ...jeanConfig,
         scripts: {
+          ...jeanConfig?.scripts,
           setup: localSetup.trim() || null,
           teardown: localTeardown.trim() || null,
           run,
