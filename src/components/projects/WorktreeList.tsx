@@ -19,6 +19,8 @@ import { chatQueryKeys } from '@/services/chat'
 import { isTauri, useReorderWorktrees } from '@/services/projects'
 import { useProjectsStore } from '@/store/projects-store'
 import { useChatStore } from '@/store/chat-store'
+import { useMarkDefinitions } from '@/lib/marks'
+import type { MarkDefinition } from '@/types/preferences'
 import {
   compareWorktreesForCanvasSort,
   getWorktreeLastActivity,
@@ -52,6 +54,7 @@ interface SortableWorktreeProps {
   disabled: boolean
   isDragging: boolean
   closestEdge: Edge | null
+  markDefinitions: readonly MarkDefinition[]
 }
 
 const SortableWorktree = memo(function SortableWorktree({
@@ -62,6 +65,7 @@ const SortableWorktree = memo(function SortableWorktree({
   disabled,
   isDragging,
   closestEdge,
+  markDefinitions,
 }: SortableWorktreeProps) {
   const elementRef = useRef<HTMLDivElement | null>(null)
 
@@ -141,6 +145,7 @@ const SortableWorktree = memo(function SortableWorktree({
         projectId={projectId}
         projectPath={projectPath}
         defaultBranch={defaultBranch}
+        markDefinitions={markDefinitions}
       />
     </div>
   )
@@ -171,6 +176,8 @@ export function WorktreeList({
   defaultBranch,
 }: WorktreeListProps) {
   const reorderWorktrees = useReorderWorktrees()
+  // Read once per list (all worktrees of a project share one server).
+  const markDefinitions = useMarkDefinitions(worktrees[0]?.serverId)
   // draggable="true" makes mobile browsers lift the row on long-press, which
   // fights the context menu; touch has no reorder gesture anyway.
   const isTouchDevice = useIsTouchDevice()
@@ -535,6 +542,7 @@ export function WorktreeList({
             }
             isDragging={dragState.draggingId === worktree.id}
             closestEdge={isTarget ? dragState.closestEdge : null}
+            markDefinitions={markDefinitions}
           />
         )
       })}

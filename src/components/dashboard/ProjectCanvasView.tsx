@@ -142,6 +142,7 @@ import {
 } from '@/components/chat/worktree-branch-badge'
 
 import { LabelModal } from '@/components/chat/LabelModal'
+import { useWorktreeMarkPicker } from '@/components/projects/useWorktreeMarkPicker'
 import { getLabelTextColor } from '@/lib/label-colors'
 import { MARK_LIST_LEVEL, resolveMark, useMarkDefinitions } from '@/lib/marks'
 import { useServerMarksLevel } from '@/lib/marks-level'
@@ -2728,25 +2729,17 @@ export function ProjectCanvasView({
   })
 
   // Worktree label modal state
-  const [worktreeLabelModalOpen, setWorktreeLabelModalOpen] = useState(false)
-  const [worktreeLabelTarget, setWorktreeLabelTarget] = useState<{
-    worktreeId: string
-    currentLabels: LabelData[]
-  } | null>(null)
-
-  const openWorktreeLabelModal = useCallback(
-    (worktree: Worktree) => {
-      setWorktreeLabelTarget({
-        worktreeId: worktree.id,
-        currentLabels: mergePinnedLabels(
-          getWorktreeLabels(worktree),
-          projectPinnedLabels
-        ),
-      })
-      setWorktreeLabelModalOpen(true)
-    },
-    [projectPinnedLabels]
-  )
+  const {
+    open: openWorktreeLabelModal,
+    isOpen: worktreeLabelModalOpen,
+    targetWorktreeId: worktreeLabelTargetId,
+    updateCurrentLabels: updateWorktreeLabelCurrentLabels,
+    modalProps: worktreeLabelModalProps,
+  } = useWorktreeMarkPicker({
+    projectId,
+    serverId: project?.serverId,
+    pinnedLabels: projectPinnedLabels,
+  })
 
   // Listen for toggle-session-label event — open label modal for worktree
   const onToggleSessionLabel = useEffectEvent(() => {
@@ -2832,28 +2825,6 @@ export function ProjectCanvasView({
     project?.default_branch,
   ])
 
-  const handleWorktreeLabelApply = useCallback(
-    async (labels: LabelData[]) => {
-      if (!worktreeLabelTarget) return
-
-      try {
-        await invoke('update_worktree_labels', {
-          worktreeId: worktreeLabelTarget.worktreeId,
-          labels,
-        })
-        setWorktreeLabelTarget(target =>
-          target ? { ...target, currentLabels: labels } : target
-        )
-        queryClient.invalidateQueries({
-          queryKey: projectsQueryKeys.worktrees(projectId),
-        })
-      } catch (error) {
-        toast.error(`Failed to update marks: ${error}`)
-      }
-    },
-    [worktreeLabelTarget, queryClient, projectId]
-  )
-
   const handleLabelPinnedChange = useCallback(
     async (label: LabelData, pinned: boolean) => {
       const nextPinnedLabels = setLabelPinned(
@@ -2901,23 +2872,24 @@ export function ProjectCanvasView({
         })
       }
 
-      setWorktreeLabelTarget(target =>
-        target
-          ? {
-              ...target,
-              currentLabels: mergePinnedLabels(
-                target.currentLabels.map(existing =>
-                  existing.name.toLowerCase() === label.name.toLowerCase()
-                    ? { ...existing, pinned }
-                    : existing
-                ),
-                nextPinnedLabels
-              ),
-            }
-          : target
+      updateWorktreeLabelCurrentLabels(currentLabels =>
+        mergePinnedLabels(
+          currentLabels.map(existing =>
+            existing.name.toLowerCase() === label.name.toLowerCase()
+              ? { ...existing, pinned }
+              : existing
+          ),
+          nextPinnedLabels
+        )
       )
     },
-    [projectId, projectPinnedLabels, queryClient, worktreeSections]
+    [
+      projectId,
+      projectPinnedLabels,
+      queryClient,
+      worktreeSections,
+      updateWorktreeLabelCurrentLabels,
+    ]
   )
 
   // Keyboard navigation - disable when any modal/dialog is open
@@ -3858,17 +3830,8 @@ export function ProjectCanvasView({
 
       {/* Worktree mark picker */}
       <LabelModal
-        key={worktreeLabelTarget?.worktreeId ?? 'wt-label'}
-        isOpen={worktreeLabelModalOpen}
-        onClose={() => {
-          setWorktreeLabelModalOpen(false)
-          setWorktreeLabelTarget(null)
-        }}
-        sessionId={null}
-        currentLabels={worktreeLabelTarget?.currentLabels ?? []}
-        target="worktree"
-        serverId={project.serverId}
-        onApplyLabels={handleWorktreeLabelApply}
+        key={worktreeLabelTargetId ?? 'wt-label'}
+        {...worktreeLabelModalProps}
         onPinnedChange={handleLabelPinnedChange}
         extraLabels={allWorktreeLabels}
       />

@@ -69,13 +69,19 @@ import {
 } from '@/components/ui/tooltip'
 import { useSidebarWidth } from '@/components/layout/SidebarWidthContext'
 import { WorktreePrBadge } from '@/components/dashboard/WorktreePrBadge'
+import { WorktreeMarksCapsule } from '@/components/dashboard/WorktreeMarksCapsule'
+import { NO_MARK_DEFINITIONS } from '@/lib/marks'
+import type { MarkDefinition } from '@/types/preferences'
 import { CollapsedCountBadge } from './CollapsedCountBadge'
+import { useWorktreeMarkPicker } from './useWorktreeMarkPicker'
 
 interface WorktreeItemProps {
   worktree: Worktree
   projectId: string
   projectPath: string
   defaultBranch: string
+  /** Mark list of the worktree's server, read once by the list (not per row). */
+  markDefinitions?: readonly MarkDefinition[]
 }
 
 interface WorktreeSessionListProps {
@@ -413,8 +419,13 @@ export const WorktreeItem = memo(function WorktreeItem({
   worktree,
   projectId,
   defaultBranch,
+  markDefinitions = NO_MARK_DEFINITIONS,
 }: WorktreeItemProps) {
   const isMobile = useIsMobile()
+  const markPicker = useWorktreeMarkPicker({
+    projectId,
+    serverId: worktree.serverId,
+  })
   const selectedWorktreeId = useProjectsStore(state => state.selectedWorktreeId)
   const selectWorktree = useProjectsStore(state => state.selectWorktree)
   const selectProject = useProjectsStore(state => state.selectProject)
@@ -918,7 +929,11 @@ export const WorktreeItem = memo(function WorktreeItem({
 
   return (
     <div>
-      <WorktreeContextMenu actions={menuActions} serverId={worktree.serverId}>
+      <WorktreeContextMenu
+        actions={menuActions}
+        serverId={worktree.serverId}
+        onSetMarks={() => markPicker.open(worktree)}
+      >
         <div
           role="button"
           tabIndex={0}
@@ -979,6 +994,10 @@ export const WorktreeItem = memo(function WorktreeItem({
             </span>
           )}
 
+          <WorktreeMarksCapsule
+            worktree={worktree}
+            definitions={markDefinitions}
+          />
           <WorktreePrBadge worktree={worktree} />
 
           {/* Sync / Pull / Push badges */}
@@ -1056,6 +1075,13 @@ export const WorktreeItem = memo(function WorktreeItem({
           isNarrowSidebar={isNarrowSidebar}
           onSessionSelect={handleSessionSelect}
           onSessionRemove={handleSessionRemove}
+        />
+      )}
+
+      {markPicker.isOpen && (
+        <LabelModal
+          key={markPicker.targetWorktreeId}
+          {...markPicker.modalProps}
         />
       )}
 
