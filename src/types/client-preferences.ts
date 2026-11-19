@@ -28,6 +28,7 @@ export const CLIENT_PREFERENCE_KEYS = [
   'zoom_level',
   'mobile_zoom_level',
   'sync_zoom_levels',
+  'close_confirm_bypass_modifier',
   'window_vibrancy',
   'finished_session_animation_enabled',
   'terminal_background',

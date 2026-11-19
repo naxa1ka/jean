@@ -331,6 +331,8 @@ pub struct AppPreferences {
     pub favorite_magic_options: Vec<String>, // Starred Magic menu option ids shown first in the mobile Magic sheet
     #[serde(default)]
     pub fast_mode_models: Vec<String>, // Model keys ("backend:baseModel") with fast tier last enabled
+    #[serde(default = "default_close_confirm_bypass_modifier")]
+    pub close_confirm_bypass_modifier: String, // Modifier that skips the session close confirmation ("none" disables)
     #[serde(default = "default_canvas_layout")]
     pub canvas_layout: String, // Canvas display mode: grid or list
     #[serde(default = "default_execution_mode")]
@@ -717,6 +719,10 @@ fn default_chrome_enabled() -> bool {
 
 fn default_auto_update_ai_backends() -> bool {
     true // Enabled by default — auto-install CLI updates in background
+}
+
+fn default_close_confirm_bypass_modifier() -> String {
+    "none".to_string() // Off by default
 }
 
 fn default_canvas_layout() -> String {
@@ -3648,6 +3654,7 @@ impl Default for AppPreferences {
             favorite_base_branches: Vec::new(),
             favorite_magic_options: Vec::new(),
             fast_mode_models: Vec::new(),
+            close_confirm_bypass_modifier: default_close_confirm_bypass_modifier(),
             canvas_layout: default_canvas_layout(),
             default_execution_mode: default_execution_mode(),
             default_backend: default_backend(),
@@ -4519,6 +4526,7 @@ const CLIENT_ONLY_PREFERENCE_KEYS: &[&str] = &[
     "zoom_level",
     "mobile_zoom_level",
     "sync_zoom_levels",
+    "close_confirm_bypass_modifier",
     "window_vibrancy",
     "finished_session_animation_enabled",
     "terminal_background",

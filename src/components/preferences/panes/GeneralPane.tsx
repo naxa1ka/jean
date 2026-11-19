@@ -199,7 +199,10 @@ import {
   type OpenInDefault,
   newSessionKindOptions,
   type NewSessionKind,
+  CLOSE_CONFIRM_BYPASS_MODIFIERS,
+  type CloseConfirmBypassModifier,
 } from '@/types/preferences'
+import { closeConfirmBypassLabel } from '@/lib/confirm-bypass'
 import {
   COMMANDCODE_MODEL_OPTIONS,
   CURSOR_MODEL_OPTIONS,
@@ -255,6 +258,12 @@ import {
   resolveDefaultModelForBackend,
   resolvePiDefaultModel,
 } from '@/lib/session-defaults'
+
+const BYPASS_MODIFIER_LABELS: Record<CloseConfirmBypassModifier, string> = {
+  shift: closeConfirmBypassLabel('shift') ?? 'Shift',
+  alt: closeConfirmBypassLabel('alt') ?? 'Alt',
+  none: 'Off',
+}
 
 type PreferencesPaneScope =
   | 'general'
@@ -3582,6 +3591,33 @@ export const GeneralPane: React.FC<{ scope?: PreferencesPaneScope }> = ({
                     }
                   }}
                 />
+              </InlineField>
+              <InlineField
+                label="Skip close confirmation"
+                description="Hold this modifier while closing a session to skip the confirmation dialog."
+              >
+                <Select
+                  value={preferences?.close_confirm_bypass_modifier ?? 'none'}
+                  onValueChange={(value: CloseConfirmBypassModifier) => {
+                    if (preferences) {
+                      patchPreferences.mutate({
+                        close_confirm_bypass_modifier: value,
+                      })
+                    }
+                  }}
+                  disabled={patchPreferences.isPending}
+                >
+                  <SelectTrigger className="w-full sm:w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CLOSE_CONFIRM_BYPASS_MODIFIERS.map(modifier => (
+                      <SelectItem key={modifier} value={modifier}>
+                        {BYPASS_MODIFIER_LABELS[modifier]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </InlineField>
             </div>
           </SettingsSection>

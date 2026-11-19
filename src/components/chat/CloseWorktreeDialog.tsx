@@ -15,6 +15,10 @@ import {
   useWorktreeUncommittedChanges,
 } from '@/components/projects/UncommittedChangesStep'
 import type { Worktree } from '@/types/projects'
+import { usePreferences } from '@/services/preferences'
+import { closeConfirmBypassLabel } from '@/lib/confirm-bypass'
+import { isNativeApp } from '@/lib/environment'
+import { useIsMobile } from '@/hooks/use-mobile'
 
 export type CloseConfirmMode = 'worktree' | 'session'
 
@@ -68,6 +72,14 @@ function CloseWorktreeDialogContent({
   )
   const [showUncommittedStep, setShowUncommittedStep] = useState(false)
   const isSession = mode === 'session'
+  // Keyboard hint: native desktop only. Worktree delete never bypasses.
+  const { data: preferences } = usePreferences()
+  const isMobile = useIsMobile()
+  const bypassLabel = closeConfirmBypassLabel(
+    preferences?.close_confirm_bypass_modifier
+  )
+  const showBypassHint =
+    isSession && isNativeApp() && !isMobile && bypassLabel !== null
   const offersSubSessions = isSession && finishedSubSessionCount > 0
   const [closeSubSessions, setCloseSubSessions] = useState(true)
   const title = isSession ? 'Delete session?' : 'Delete worktree?'
@@ -115,6 +127,11 @@ function CloseWorktreeDialogContent({
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
+          {showBypassHint && (
+            <p className="text-xs text-muted-foreground">
+              Hold {bypassLabel} while closing to skip this confirmation.
+            </p>
+          )}
         </AlertDialogHeader>
         {offersSubSessions && (
           <label className="flex items-center gap-2 text-sm text-muted-foreground">

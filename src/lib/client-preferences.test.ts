@@ -28,6 +28,21 @@ describe('client-preferences', () => {
     clearClientPreferencesForTests()
   })
 
+  it('coerces an unknown stored close bypass modifier to none', () => {
+    storage.set(
+      CLIENT_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ close_confirm_bypass_modifier: 'bogus' })
+    )
+    expect(readClientPreferences().close_confirm_bypass_modifier).toBe('none')
+
+    clearClientPreferencesForTests()
+    storage.set(
+      CLIENT_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ close_confirm_bypass_modifier: 'shift' })
+    )
+    expect(readClientPreferences().close_confirm_bypass_modifier).toBe('shift')
+  })
+
   it('returns versioned client defaults without legacy preferences', () => {
     expect(readClientPreferences()).toEqual(defaultClientPreferences())
   })

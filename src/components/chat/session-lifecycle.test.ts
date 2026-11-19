@@ -248,6 +248,7 @@ describe('decideSessionClose', () => {
       onLastSession?: 'close-session' | 'confirm-worktree'
       keepWorktree?: boolean
       finishedSubSessionCount?: number
+      bypassConfirm?: boolean
     } = {}
   ) =>
     decideSessionClose({
@@ -257,7 +258,39 @@ describe('decideSessionClose', () => {
       onLastSession: options.onLastSession ?? 'close-session',
       keepWorktree: options.keepWorktree,
       finishedSubSessionCount: options.finishedSubSessionCount,
+      bypassConfirm: options.bypassConfirm,
     })
+
+  it('bypass closes a non-empty lead alone instead of confirming', () => {
+    expect(decide(used, [used, other], { bypassConfirm: true })).toBe(
+      'close-session'
+    )
+    expect(
+      decide(empty, [empty, other], {
+        inputDrafts: { s1: 'draft' },
+        finishedSubSessionCount: 2,
+        bypassConfirm: true,
+      })
+    ).toBe('close-session')
+  })
+
+  it('bypass never skips the worktree delete confirmation or a noop', () => {
+    expect(
+      decide(used, [used], {
+        onLastSession: 'confirm-worktree',
+        bypassConfirm: true,
+      })
+    ).toBe('confirm-worktree')
+    expect(decide(used, [], { bypassConfirm: true })).toBe('confirm-worktree')
+    expect(decide(used, [], { keepWorktree: true, bypassConfirm: true })).toBe(
+      'noop'
+    )
+    expect(
+      decide({ ...used, archived_at: 1 }, [used, other], {
+        bypassConfirm: true,
+      })
+    ).toBe('noop')
+  })
 
   it('confirms an empty lead so the dialog can offer its finished sub-sessions', () => {
     expect(decide(empty, [empty, other], { finishedSubSessionCount: 2 })).toBe(

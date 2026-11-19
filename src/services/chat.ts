@@ -61,6 +61,7 @@ import type {
 } from '@/types/projects'
 import { preserveQueryCacheOnError } from '@/lib/query-error'
 import { renameTableKeyMessage } from '@/lib/pinned-table-reveal'
+import { readCloseBypassDetail } from '@/lib/confirm-bypass'
 import {
   useConsolidatedAllSessions,
   useConsolidatedUnreadSessions,
@@ -1414,11 +1415,12 @@ export function useCloseSessionOrWorktreeKeybinding(
   }, [closeSession, queryClient])
 
   useEffect(() => {
-    const handleCloseSessionOrWorktree = () => {
+    const handleCloseSessionOrWorktree = (e: Event) => {
       // Skip when session modal is open — SessionChatModal handles CMD+W in that case
       if (useUIStore.getState().sessionChatModalOpen) return
 
-      if (onConfirmRequired) {
+      // The user held the close bypass modifier: close without asking.
+      if (onConfirmRequired && !readCloseBypassDetail(e)) {
         // Find branch name and session count for the dialog
         const { activeWorktreeId } = useChatStore.getState()
         if (activeWorktreeId) {

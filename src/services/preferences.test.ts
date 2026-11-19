@@ -570,6 +570,7 @@ describe('preferences service', () => {
         custom_pi_providers: [],
         favorite_models: [],
         fast_mode_models: [],
+        close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
         default_execution_mode: 'plan',
@@ -731,6 +732,7 @@ describe('preferences service', () => {
         custom_pi_providers: [],
         favorite_models: [],
         fast_mode_models: [],
+        close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
         default_execution_mode: 'plan',
@@ -913,6 +915,7 @@ describe('preferences service', () => {
         custom_pi_providers: [],
         favorite_models: [],
         fast_mode_models: [],
+        close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
         default_execution_mode: 'plan',
@@ -1044,6 +1047,7 @@ describe('preferences service', () => {
         custom_pi_providers: [],
         favorite_models: [],
         fast_mode_models: [],
+        close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
         default_execution_mode: 'plan',
@@ -1176,6 +1180,7 @@ describe('preferences service', () => {
         custom_pi_providers: [],
         favorite_models: [],
         fast_mode_models: [],
+        close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
         default_execution_mode: 'plan',
@@ -1350,6 +1355,7 @@ describe('preferences service', () => {
         custom_pi_providers: [],
         favorite_models: [],
         fast_mode_models: [],
+        close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
         default_execution_mode: 'plan',
@@ -1480,6 +1486,7 @@ describe('preferences service', () => {
         custom_pi_providers: [],
         favorite_models: [],
         fast_mode_models: [],
+        close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
         default_execution_mode: 'plan',
