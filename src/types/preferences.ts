@@ -1396,6 +1396,7 @@ export interface AppPreferences {
   http_server_localhost_only: boolean // Legacy localhost-only fallback when no bind host is set
   http_server_token_required: boolean // Require token for web access (default true)
   auto_pull_base_branch: boolean // Auto-pull base branch before creating a new worktree
+  archive_retention_days: number // Days before archived worktrees are deleted (0 = never)
   debug_mode_enabled: boolean // Show debug panel in chat sessions
   agents_enabled?: boolean // Experimental: show the Agents tab
   default_enabled_mcp_servers: string[] // MCP server names enabled by default (empty = none)
@@ -2747,6 +2748,16 @@ export const terminalFontOptions: { value: TerminalFont; label: string }[] = [
   { value: 'system', label: 'System Monospace' },
 ]
 
+// Archive retention options (days) - how long archived worktrees are kept
+export const archiveRetentionOptions: { value: number; label: string }[] = [
+  { value: 0, label: 'Never (keep forever)' },
+  { value: 7, label: '7 days' },
+  { value: 14, label: '14 days' },
+  { value: 30, label: '30 days' },
+  { value: 60, label: '60 days' },
+  { value: 90, label: '90 days' },
+]
+
 // Syntax highlighting themes (from shiki bundled themes)
 export type SyntaxTheme =
   | 'vitesse-black'
@@ -2857,6 +2868,7 @@ export const defaultPreferences: AppPreferences = {
   http_server_localhost_only: true, // Default to localhost-only for security
   http_server_token_required: true, // Default: require token for security
   auto_pull_base_branch: true, // Default: enabled
+  archive_retention_days: 7,
   debug_mode_enabled: false, // Default: disabled
   agents_enabled: false, // Default: disabled (experimental)
   default_enabled_mcp_servers: [], // Default: no MCP servers enabled

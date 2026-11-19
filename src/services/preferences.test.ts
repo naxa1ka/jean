@@ -573,6 +573,7 @@ describe('preferences service', () => {
         close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -735,6 +736,7 @@ describe('preferences service', () => {
         close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -918,6 +920,7 @@ describe('preferences service', () => {
         close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -1050,6 +1053,7 @@ describe('preferences service', () => {
         close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -1183,6 +1187,7 @@ describe('preferences service', () => {
         close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -1358,6 +1363,7 @@ describe('preferences service', () => {
         close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -1489,6 +1495,7 @@ describe('preferences service', () => {
         close_confirm_bypass_modifier: 'none',
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',

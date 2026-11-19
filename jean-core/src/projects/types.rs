@@ -479,8 +479,8 @@ pub struct Worktree {
     /// Legacy single-label field. Deserialized for migration; never serialized.
     #[serde(default, skip_serializing)]
     pub label: Option<LabelData>,
-    /// Set by older Jean versions that could archive worktrees. Such worktrees are
-    /// hidden and purged by `cleanup_deleted_items`; nothing sets this any more.
+    /// Unix timestamp when the worktree was archived. Archived worktrees are hidden
+    /// and deleted by `cleanup_deleted_items` after `archive_retention_days`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<u64>,
     /// Unix timestamp when worktree was last opened/viewed by the user
@@ -815,6 +815,22 @@ pub struct WorktreeDeleteErrorEvent {
     pub project_id: String,
     /// The error message
     pub error: String,
+}
+
+/// Event emitted when a worktree is archived
+#[derive(Clone, Serialize)]
+pub struct WorktreeArchivedEvent {
+    /// The worktree ID that was archived
+    pub id: String,
+    /// The project ID
+    pub project_id: String,
+}
+
+/// Event emitted when a worktree is restored from the archive
+#[derive(Clone, Serialize)]
+pub struct WorktreeUnarchivedEvent {
+    /// The restored worktree
+    pub worktree: Worktree,
 }
 
 /// Event emitted when worktree is permanently deleted

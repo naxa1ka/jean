@@ -201,6 +201,7 @@ import {
   type NewSessionKind,
   CLOSE_CONFIRM_BYPASS_MODIFIERS,
   type CloseConfirmBypassModifier,
+  archiveRetentionOptions,
 } from '@/types/preferences'
 import { closeConfirmBypassLabel } from '@/lib/confirm-bypass'
 import {
@@ -245,6 +246,7 @@ import {
 } from '@/lib/cli-update'
 import { SettingsSection } from '../SettingsSection'
 import { InlineField } from '../InlineField'
+import { ArchivedWorktreesField } from './ArchivedWorktreesField'
 import { CliAuthActions } from '../CliAuthActions'
 import {
   CliChangeVersionButton,
@@ -3668,6 +3670,38 @@ export const GeneralPane: React.FC<{ scope?: PreferencesPaneScope }> = ({
                   }}
                 />
               </InlineField>
+
+              <InlineField
+                label="Auto-delete archived worktrees"
+                description="Deletes the folder and local branch after this time"
+              >
+                <Select
+                  value={String(preferences?.archive_retention_days ?? 7)}
+                  onValueChange={value => {
+                    if (preferences) {
+                      patchPreferences.mutate({
+                        archive_retention_days: Number(value),
+                      })
+                    }
+                  }}
+                >
+                  <SelectTrigger className="w-full sm:w-80">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {archiveRetentionOptions.map(option => (
+                      <SelectItem
+                        key={option.value}
+                        value={String(option.value)}
+                      >
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </InlineField>
+
+              <ArchivedWorktreesField />
             </div>
           </SettingsSection>
 

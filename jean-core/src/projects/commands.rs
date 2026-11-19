@@ -47,9 +47,10 @@ use super::sentry_issues::{
 use super::storage::{get_project_worktrees_dir, load_projects_data, save_projects_data};
 use super::types::{
     JeanConfig, MergeType, Project, ProjectAutoFixSettings, ProjectListItem, SessionType, Worktree,
-    WorktreeBranchExistsEvent, WorktreeCreateErrorEvent, WorktreeCreatedEvent,
-    WorktreeCreatingEvent, WorktreeDeleteErrorEvent, WorktreeDeletedEvent, WorktreeDeletingEvent,
-    WorktreeOrigin, WorktreePathExistsEvent, WorktreeSetupCompleteEvent,
+    WorktreeArchivedEvent, WorktreeBranchExistsEvent, WorktreeCreateErrorEvent,
+    WorktreeCreatedEvent, WorktreeCreatingEvent, WorktreeDeleteErrorEvent, WorktreeDeletedEvent,
+    WorktreeDeletingEvent, WorktreeOrigin, WorktreePathExistsEvent, WorktreeSetupCompleteEvent,
+    WorktreeUnarchivedEvent,
 };
 use super::unmanaged_worktrees::{
     blocked_import_paths, list_unmanaged_from_repo, main_checkout_path_from_porcelain,
@@ -3668,6 +3669,19 @@ pub async fn checkout_pr(
         .ok_or_else(|| format!("Project not found: {project_id}"))?
         .clone();
 
+    // Restore an archived worktree for this PR instead of creating a new one
+    if let Some(archived_wt) = data.worktrees.iter().find(|w| {
+        w.project_id == project_id && w.pr_number == Some(pr_number) && w.archived_at.is_some()
+    }) {
+        if Path::new(&archived_wt.path).exists() {
+            let worktree_id = archived_wt.id.clone();
+            log::info!(
+                "[checkout_pr] Restoring archived worktree {worktree_id} for PR #{pr_number}"
+            );
+            return unarchive_worktree(app, worktree_id).await;
+        }
+    }
+
     // Fetch PR details from GitHub (for context and worktree naming)
     let pr_detail = get_github_pr(app.clone(), project.path.clone(), pr_number, None).await?;
     // Persist the same PR link fields as create/link PR so magic actions
@@ -3693,7 +3707,7 @@ pub async fn checkout_pr(
     let worktree_name = generate_pr_worktree_name(pr_number, &pr_detail.head_ref_name);
     log::info!("[checkout_pr] Generated base worktree name: '{worktree_name}'");
 
-    // Drop legacy archived worktree records for this PR from data so they don't
+    // Drop archived worktree records for this PR (their directory is gone) so they don't
     // interfere with name dedup. The background thread will clean up leftover
     // git worktrees/branches/directories.
     let project_worktrees_dir =
@@ -4460,6 +4474,95 @@ pub async fn create_base_session(app: AppHandle, project_id: String) -> Result<W
     data.find_base_session(&project_id)
         .cloned()
         .ok_or_else(|| format!("Base session not found for project: {project_id}"))
+}
+
+// =============================================================================
+// Archive Commands
+// =============================================================================
+
+/// Archive a worktree: hide it from the UI but keep the git worktree and branch.
+///
+/// `cleanup_deleted_items` deletes it after `archive_retention_days`.
+pub async fn archive_worktree(app: AppHandle, worktree_id: String) -> Result<(), String> {
+    log::trace!("Archiving worktree: {worktree_id}");
+
+    // Stop any running processes for this worktree
+    crate::chat::registry::cancel_processes_for_worktree(&app, &worktree_id);
+
+    let mut data = load_projects_data(&app)?;
+
+    let worktree = data
+        .find_worktree_mut(&worktree_id)
+        .ok_or_else(|| format!("Worktree not found: {worktree_id}"))?;
+
+    if worktree.session_type == SessionType::Base {
+        return Err("Base sessions cannot be archived.".to_string());
+    }
+    if worktree.archived_at.is_some() {
+        return Err("Worktree is already archived".to_string());
+    }
+
+    let project_id = worktree.project_id.clone();
+    worktree.archived_at = Some(now());
+    save_projects_data(&app, &data)?;
+
+    let event = WorktreeArchivedEvent {
+        id: worktree_id.clone(),
+        project_id,
+    };
+    if let Err(e) = app.emit_all("worktree:archived", &event) {
+        log::error!("Failed to emit worktree:archived event: {e}");
+    }
+
+    log::trace!("Successfully archived worktree: {worktree_id}");
+    Ok(())
+}
+
+/// Restore an archived worktree. Fails if its directory is gone.
+pub async fn unarchive_worktree(app: AppHandle, worktree_id: String) -> Result<Worktree, String> {
+    log::trace!("Unarchiving worktree: {worktree_id}");
+
+    let mut data = load_projects_data(&app)?;
+
+    let worktree = data
+        .find_worktree_mut(&worktree_id)
+        .ok_or_else(|| format!("Worktree not found: {worktree_id}"))?;
+
+    if worktree.archived_at.is_none() {
+        return Err("Worktree is not archived".to_string());
+    }
+
+    if worktree.session_type != SessionType::Base && !Path::new(&worktree.path).exists() {
+        return Err(format!(
+            "Git worktree directory no longer exists: {}. Delete the worktree instead.",
+            worktree.path
+        ));
+    }
+
+    worktree.archived_at = None;
+    let restored_worktree = worktree.clone();
+    save_projects_data(&app, &data)?;
+
+    let event = WorktreeUnarchivedEvent {
+        worktree: restored_worktree.clone(),
+    };
+    if let Err(e) = app.emit_all("worktree:unarchived", &event) {
+        log::error!("Failed to emit worktree:unarchived event: {e}");
+    }
+
+    log::trace!("Successfully unarchived worktree: {worktree_id}");
+    Ok(restored_worktree)
+}
+
+/// List all archived worktrees across all projects
+pub async fn list_archived_worktrees(app: AppHandle) -> Result<Vec<Worktree>, String> {
+    let data = load_projects_data(&app)?;
+    Ok(data
+        .worktrees
+        .iter()
+        .filter(|w| w.archived_at.is_some())
+        .cloned()
+        .collect())
 }
 
 /// Import an existing git worktree directory into Jean
@@ -12751,7 +12854,11 @@ pub struct CleanupResult {
 /// Days a closed session stays on disk before `cleanup_deleted_items` purges it.
 pub const DELETED_ITEM_RETENTION_DAYS: u64 = 30;
 
-/// Purge sessions closed more than `DELETED_ITEM_RETENTION_DAYS` ago, then run
+/// Fallback for `archive_retention_days` when preferences cannot be loaded.
+const DEFAULT_ARCHIVE_RETENTION_DAYS: u64 = 7;
+
+/// Delete worktrees archived more than `archive_retention_days` ago and purge
+/// sessions closed more than `DELETED_ITEM_RETENTION_DAYS` ago, then run
 /// the orphan janitors. Scheduled by `initialize_runtime` at startup and daily.
 pub async fn cleanup_deleted_items(app: AppHandle) -> Result<CleanupResult, String> {
     log::trace!("Purging items deleted more than {DELETED_ITEM_RETENTION_DAYS} days ago");
@@ -12760,22 +12867,29 @@ pub async fn cleanup_deleted_items(app: AppHandle) -> Result<CleanupResult, Stri
     let mut deleted_worktrees = 0u32;
     let mut deleted_sessions = 0u32;
 
-    // Nothing archives worktrees any more. This pass only drains worktrees that
-    // an older Jean archived (`archived_at` set) once they pass the cutoff.
+    // Archived worktrees: delete folder, local branch and session data once they
+    // pass `archive_retention_days` (0 = keep forever).
+    let archive_retention_days = crate::load_preferences_sync(&app)
+        .map(|p| u64::from(p.archive_retention_days))
+        .unwrap_or(DEFAULT_ARCHIVE_RETENTION_DAYS);
     let data = load_projects_data(&app)?;
-    let worktrees_to_delete: Vec<_> = data
-        .worktrees
-        .iter()
-        .filter(|w| {
-            w.archived_at
-                .is_some_and(|archived_at| archived_at < cutoff)
-        })
-        .cloned()
-        .collect();
+    let worktrees_to_delete: Vec<_> = if archive_retention_days == 0 {
+        Vec::new()
+    } else {
+        let archive_cutoff = now().saturating_sub(archive_retention_days * 86400);
+        data.worktrees
+            .iter()
+            .filter(|w| {
+                w.archived_at
+                    .is_some_and(|archived_at| archived_at < archive_cutoff)
+            })
+            .cloned()
+            .collect()
+    };
 
     for worktree in worktrees_to_delete {
         log::trace!(
-            "Deleting legacy archived worktree: {} (archived {} days ago)",
+            "Deleting archived worktree: {} (archived {} days ago)",
             worktree.name,
             (now() - worktree.archived_at.unwrap_or(0)) / 86400
         );
@@ -16791,5 +16905,127 @@ mod cleanup_deleted_items_tests {
         assert_eq!(ids, vec![young_id.as_str()]);
         assert!(!old_dir.exists(), "purged session data dir still exists");
         assert!(young_dir.join("metadata.json").exists());
+    }
+
+    fn worktree_json(
+        id: &str,
+        session_type: &str,
+        path: &str,
+        archived_at: Option<u64>,
+    ) -> Worktree {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "project_id": "project", "name": id,
+            "path": path, "branch": id,
+            "created_at": 1, "session_type": session_type,
+            "archived_at": archived_at
+        }))
+        .unwrap()
+    }
+
+    fn save_worktrees(app: &AppHandle, worktrees: Vec<Worktree>) {
+        save_projects_data(
+            app,
+            &super::super::types::ProjectsData {
+                projects: vec![],
+                worktrees,
+            },
+        )
+        .unwrap();
+    }
+
+    fn write_retention_days(app: &AppHandle, days: u32) {
+        let mut prefs = crate::AppPreferences::default();
+        prefs.archive_retention_days = days;
+        let path = crate::get_preferences_path(app).unwrap();
+        std::fs::write(path, serde_json::to_string(&prefs).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn archive_and_unarchive_toggle_archived_at() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = AppHandle::new(temp.path().to_path_buf(), temp.path().to_path_buf()).unwrap();
+        let path = temp.path().to_string_lossy().to_string();
+        save_worktrees(
+            &app,
+            vec![
+                worktree_json("wt", "worktree", &path, None),
+                worktree_json("base", "base", &path, None),
+            ],
+        );
+
+        archive_worktree(app.clone(), "wt".to_string())
+            .await
+            .unwrap();
+        let archived = list_archived_worktrees(app.clone()).await.unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].id, "wt");
+        assert!(archived[0].archived_at.is_some());
+
+        assert!(archive_worktree(app.clone(), "wt".to_string())
+            .await
+            .is_err());
+        assert!(archive_worktree(app.clone(), "base".to_string())
+            .await
+            .is_err());
+
+        let restored = unarchive_worktree(app.clone(), "wt".to_string())
+            .await
+            .unwrap();
+        assert!(restored.archived_at.is_none());
+        assert!(list_archived_worktrees(app.clone())
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(unarchive_worktree(app.clone(), "wt".to_string())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn purges_archived_worktrees_older_than_retention_days() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = AppHandle::new(temp.path().to_path_buf(), temp.path().to_path_buf()).unwrap();
+        let path = temp.path().to_string_lossy().to_string();
+        write_retention_days(&app, 7);
+        save_worktrees(
+            &app,
+            vec![
+                worktree_json("old", "worktree", &path, Some(now() - 8 * 86400)),
+                worktree_json("young", "worktree", &path, Some(now() - 86400)),
+            ],
+        );
+
+        let result = cleanup_deleted_items(app.clone()).await.unwrap();
+
+        assert_eq!(result.deleted_worktrees, 1);
+        let ids: Vec<String> = load_projects_data(&app)
+            .unwrap()
+            .worktrees
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(ids, vec!["young".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn zero_retention_days_never_purges_archived_worktrees() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = AppHandle::new(temp.path().to_path_buf(), temp.path().to_path_buf()).unwrap();
+        let path = temp.path().to_string_lossy().to_string();
+        write_retention_days(&app, 0);
+        save_worktrees(
+            &app,
+            vec![worktree_json(
+                "old",
+                "worktree",
+                &path,
+                Some(now() - 365 * 86400),
+            )],
+        );
+
+        let result = cleanup_deleted_items(app.clone()).await.unwrap();
+
+        assert_eq!(result.deleted_worktrees, 0);
+        assert_eq!(load_projects_data(&app).unwrap().worktrees.len(), 1);
     }
 }
