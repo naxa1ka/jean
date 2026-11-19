@@ -10,6 +10,8 @@ export function getPrStatusDisplay(status: PrDisplayStatus): {
       return { label: 'Draft', className: 'text-muted-foreground' }
     case 'open':
       return { label: 'Open', className: 'text-success' }
+    case 'review':
+      return { label: 'In review', className: 'text-success' }
     case 'merged':
       return {
         label: 'Merged',

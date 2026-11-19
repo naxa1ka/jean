@@ -68,6 +68,7 @@ import {
   TooltipContent,
 } from '@/components/ui/tooltip'
 import { useSidebarWidth } from '@/components/layout/SidebarWidthContext'
+import { WorktreePrBadge } from '@/components/dashboard/WorktreePrBadge'
 import { CollapsedCountBadge } from './CollapsedCountBadge'
 
 interface WorktreeItemProps {
@@ -977,6 +978,8 @@ export const WorktreeItem = memo(function WorktreeItem({
               </button>
             </span>
           )}
+
+          <WorktreePrBadge worktree={worktree} />
 
           {/* Sync / Pull / Push badges */}
           {showStatusBadges && (behindCount > 0 || pushCount > 0) && (
