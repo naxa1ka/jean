@@ -491,7 +491,9 @@ export const WorktreeItem = memo(function WorktreeItem({
   // WorktreeContextMenu so the hook isn't run twice per row. The middle-click
   // close reuses `handleClose` (same as the context menu).
   const menuActions = useWorktreeMenuActions({ worktree, projectId })
-  const { handleClose } = menuActions
+  const { handleClose, handleArchive } = menuActions
+  const { data: localPreferences } = usePreferences(LOCAL_SERVER_ID)
+  const closeBypassModifier = localPreferences?.close_confirm_bypass_modifier
 
   const { mutate: closeSession } = useCloseSession()
   const closeSessions = useCloseSessions()
@@ -790,11 +792,19 @@ export const WorktreeItem = memo(function WorktreeItem({
   ])
 
   // Middle-click closes the worktree, mirroring the canvas/session-tab close,
-  // always behind the confirmation dialog.
-  const handleWorktreeMiddleClose = useCallback(() => {
-    if (isBase) return
-    setCloseConfirm({ mode: 'worktree' })
-  }, [isBase])
+  // behind the confirmation dialog. Holding the bypass modifier archives it at
+  // once instead: archive is reversible, delete is permanent.
+  const handleWorktreeMiddleClose = useCallback(
+    (e: React.MouseEvent) => {
+      if (isBase) return
+      if (hasCloseConfirmBypassModifier(e, closeBypassModifier)) {
+        handleArchive()
+        return
+      }
+      setCloseConfirm({ mode: 'worktree' })
+    },
+    [isBase, closeBypassModifier, handleArchive]
+  )
 
   // Middle-click or "Delete Session" on a conversation row, mirroring the
   // session tab: non-empty sessions confirm first, empty ones close at once.

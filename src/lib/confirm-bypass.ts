@@ -41,6 +41,8 @@ export function hasCloseConfirmBypassModifier(
       return e.shiftKey
     case 'alt':
       return e.altKey
+    case 'ctrl':
+      return e.ctrlKey
     case 'none':
       return false
   }
@@ -55,6 +57,8 @@ export function closeConfirmBypassLabel(
       return isClientMacOS ? '⇧' : 'Shift'
     case 'alt':
       return isClientMacOS ? '⌥' : 'Alt'
+    case 'ctrl':
+      return isClientMacOS ? '⌃' : 'Ctrl'
     case 'none':
       return null
   }

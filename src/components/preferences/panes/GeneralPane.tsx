@@ -264,6 +264,7 @@ import {
 const BYPASS_MODIFIER_LABELS: Record<CloseConfirmBypassModifier, string> = {
   shift: closeConfirmBypassLabel('shift') ?? 'Shift',
   alt: closeConfirmBypassLabel('alt') ?? 'Alt',
+  ctrl: closeConfirmBypassLabel('ctrl') ?? 'Ctrl',
   none: 'Off',
 }
 
@@ -3596,7 +3597,7 @@ export const GeneralPane: React.FC<{ scope?: PreferencesPaneScope }> = ({
               </InlineField>
               <InlineField
                 label="Skip close confirmation"
-                description="Hold this modifier while closing a session to skip the confirmation dialog."
+                description="Hold this modifier while closing a session to skip the confirmation dialog. Hold it while middle-clicking a worktree to archive it at once."
               >
                 <Select
                   value={preferences?.close_confirm_bypass_modifier ?? 'none'}

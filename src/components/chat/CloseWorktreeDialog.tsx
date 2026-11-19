@@ -72,14 +72,14 @@ function CloseWorktreeDialogContent({
   )
   const [showUncommittedStep, setShowUncommittedStep] = useState(false)
   const isSession = mode === 'session'
-  // Keyboard hint: native desktop only. Worktree delete never bypasses.
+  // Keyboard hint: native desktop only. Worktree delete never bypasses; the
+  // modifier + middle-click archives the worktree instead.
   const { data: preferences } = usePreferences()
   const isMobile = useIsMobile()
   const bypassLabel = closeConfirmBypassLabel(
     preferences?.close_confirm_bypass_modifier
   )
-  const showBypassHint =
-    isSession && isNativeApp() && !isMobile && bypassLabel !== null
+  const showBypassHint = isNativeApp() && !isMobile && bypassLabel !== null
   const offersSubSessions = isSession && finishedSubSessionCount > 0
   const [closeSubSessions, setCloseSubSessions] = useState(true)
   const title = isSession ? 'Delete session?' : 'Delete worktree?'
@@ -129,7 +129,9 @@ function CloseWorktreeDialogContent({
           <AlertDialogDescription>{description}</AlertDialogDescription>
           {showBypassHint && (
             <p className="text-xs text-muted-foreground">
-              Hold {bypassLabel} while closing to skip this confirmation.
+              {isSession
+                ? `Hold ${bypassLabel} while closing to skip this confirmation.`
+                : `Hold ${bypassLabel} and middle-click to archive instead.`}
             </p>
           )}
         </AlertDialogHeader>

@@ -406,17 +406,24 @@ surface asks `decideSessionClose` in `src/components/chat/session-lifecycle.ts`,
 which also owns active-session selection and the neighbor picked after a tab
 closes.
 
-### Bypass modifier (sessions only)
+### Bypass modifier
 
-The client-only preference `close_confirm_bypass_modifier` (`shift`, `alt`, or
-`none`, default `none`; Settings → General → Chat) skips the **session**
-confirmation when held:
+The client-only preference `close_confirm_bypass_modifier` (`shift`, `alt`,
+`ctrl`, or `none`, default `none`; Settings → General → Chat) skips the
+**session** confirmation when held:
 
 - Surfaces: tab X button, tab middle-click, sidebar session-row middle-click,
   and the close shortcut (Cmd/Ctrl+W).
 - `decideSessionClose({ bypassConfirm })` turns `confirm-session` into
   `close-session`. A lead session closes alone; its finished sub-sessions stay
   open. `confirm-worktree` never bypasses, because worktree delete is permanent.
+- Worktree rows: the modifier + middle-click **archives** the worktree at once
+  (`handleArchive` in `WorktreeItem.tsx`). Archive is reversible; a plain
+  middle-click still opens the delete dialog. The delete dialog shows this hint
+  on native desktop only.
+- `ctrl` never skips the dialog for Cmd/Ctrl+W: off macOS Ctrl is the `mod`
+  key in that shortcut, so `stripShortcutModifier` finds no separate `ctrl`
+  token.
 - The held modifier changes the shortcut string (`mod+shift+w`).
   `resolveShortcutWithBypass()` in `useMainWindowEventListeners.ts` retries with
   the modifier stripped, and accepts the retry only for
