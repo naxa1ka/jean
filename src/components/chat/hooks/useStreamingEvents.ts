@@ -6,7 +6,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { useChatStore } from '@/store/chat-store'
 import { useUIStore } from '@/store/ui-store'
 import { chatQueryKeys, hasLocalSendInFlight } from '@/services/chat'
-import { isTauri, saveWorktreePr, projectsQueryKeys } from '@/services/projects'
+import { isTauri, projectsQueryKeys } from '@/services/projects'
 import type { Project, Worktree } from '@/types/projects'
 import { preferencesQueryKeys } from '@/services/preferences'
 import type {
@@ -1749,30 +1749,6 @@ export default function useStreamingEvents({
             }
           }
         )
-      }
-
-      // Detect PR_CREATED marker and save PR info (async, after main flow)
-      // Format: PR_CREATED: #<number> <url>
-      if (content) {
-        const prMatch = content.match(
-          /PR_CREATED:\s*#(\d+)\s+(https?:\/\/\S+)/i
-        )
-        const prNumberStr = prMatch?.[1]
-        const prUrl = prMatch?.[2]
-        if (prNumberStr && prUrl) {
-          const prNumber = parseInt(prNumberStr, 10)
-          // Save PR info to worktree (async, fire and forget)
-          saveWorktreePr(worktreeId, prNumber, prUrl)
-            .then(() => {
-              // Invalidate worktree query to refresh PR link in UI
-              queryClient.invalidateQueries({
-                queryKey: [...projectsQueryKeys.all, 'worktree', worktreeId],
-              })
-            })
-            .catch(err => {
-              console.error('[ChatWindow] Failed to save PR info:', err)
-            })
-        }
       }
 
       // Trigger git status poll after prompt completes (Claude may have made changes)

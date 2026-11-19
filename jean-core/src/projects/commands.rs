@@ -44,7 +44,9 @@ use super::release_notes::{
 use super::sentry_issues::{
     add_sentry_reference, generate_branch_name_from_sentry_issue, SentryIssueContext,
 };
-use super::storage::{get_project_worktrees_dir, load_projects_data, save_projects_data};
+use super::storage::{
+    get_project_worktrees_dir, load_projects_data, save_projects_data, with_projects_data_mut,
+};
 use super::types::{
     JeanConfig, MergeType, Project, ProjectAutoFixSettings, ProjectListItem, SessionType, Worktree,
     WorktreeArchivedEvent, WorktreeBranchExistsEvent, WorktreeCreateErrorEvent,
@@ -6777,13 +6779,13 @@ fn save_worktree_pr_link(
     pr_number: u32,
     pr_url: &str,
 ) -> Result<(), String> {
-    let mut data = load_projects_data(app)?;
-    if let Some(wt) = data.worktrees.iter_mut().find(|w| w.id == worktree_id) {
-        wt.pr_number = Some(pr_number);
-        wt.pr_url = Some(pr_url.to_string());
-        save_projects_data(app, &data)?;
-    }
-    Ok(())
+    with_projects_data_mut(app, |data| {
+        if let Some(wt) = data.worktrees.iter_mut().find(|w| w.id == worktree_id) {
+            wt.pr_number = Some(pr_number);
+            wt.pr_url = Some(pr_url.to_string());
+        }
+        Ok(())
+    })
 }
 
 /// Detect and link an existing PR for the current branch of a worktree.
@@ -6815,7 +6817,7 @@ pub async fn detect_and_link_pr(
     detect_and_link_pr_for_worktree(&app, &worktree_id, &worktree_path)
 }
 
-fn detect_and_link_pr_for_worktree(
+pub(crate) fn detect_and_link_pr_for_worktree(
     app: &AppHandle,
     worktree_id: &str,
     worktree_path: &str,

@@ -9,6 +9,7 @@ pub mod github_issues;
 pub mod gitlab_issues;
 pub mod linear_issues;
 mod names;
+pub mod pr_autolink;
 pub mod pr_status;
 pub mod provider;
 mod release_notes;
