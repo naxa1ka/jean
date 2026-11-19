@@ -231,6 +231,7 @@ import { useUIStatePersistence } from '@/hooks/useUIStatePersistence'
 import { useClientViewStatePersistence } from '@/hooks/useClientViewStatePersistence'
 import { useSessionStatePersistence } from '@/hooks/useSessionStatePersistence'
 import { usePrWorktreeSweep } from '@/hooks/usePrWorktreeSweep'
+import { usePrStatusEvents } from '@/services/pr-status'
 import {
   useAppFocusTracking,
   useGitStatusEvents,
@@ -475,6 +476,9 @@ export function MainWindow() {
 
   // Listen for git status updates from the background task
   useGitStatusEvents()
+
+  // Listen for PR status updates (canvas and sidebar capsules need them without a chat open)
+  usePrStatusEvents()
 
   // Listen for background worktree events (creation/deletion) - must be here
   // (not in sidebar) so events are received even when sidebar is closed

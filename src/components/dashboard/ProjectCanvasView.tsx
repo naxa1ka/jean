@@ -214,6 +214,7 @@ import {
 import { MrRobotPanel, MrRobotProgress } from './MrRobotPanel'
 import { getWorktreeLabelContainerClassName } from './worktree-label-layout'
 import { WorktreeMarkedSessionsBadge } from './WorktreeMarkedSessionsBadge'
+import { WorktreePrBadge } from './WorktreePrBadge'
 import {
   CANVAS_ROW_STATE_LABELS,
   getCanvasRowAttention,
@@ -685,7 +686,6 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
     worktreeName: rowTitle,
     defaultBranch,
     stackedBaseBranch,
-    prNumber: worktree.pr_number,
     securityAlertNumber: worktree.security_alert_number,
     advisoryGhsaId: worktree.advisory_ghsa_id,
   })
@@ -705,7 +705,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
     ])
 
   const { data: prStatus } = usePrStatus(
-    compact && isVisible && worktree.pr_number ? worktree.id : null
+    isVisible && worktree.pr_number ? worktree.id : null
   )
   const prDisplayStatus =
     prStatus?.display_status ??
@@ -837,8 +837,8 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
               </span>
             )}
             {worktree.pr_number && (
-              <span className="inline-flex shrink-0 items-center gap-0.5 tabular-nums">
-                #{worktree.pr_number}
+              <span className="inline-flex shrink-0 items-center gap-0.5">
+                <WorktreePrBadge worktree={worktree} compact />
                 {prCheckStatus === 'success' && (
                   <Check
                     aria-label="Checks passed"
@@ -938,12 +938,6 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
                       </>
                     )}
                     <span className="max-w-40 truncate">{displayBranch}</span>
-                    {worktree.pr_number && (
-                      <>
-                        <span className="text-border">·</span>
-                        <span>#{worktree.pr_number}</span>
-                      </>
-                    )}
                     {worktree.security_alert_number && (
                       <>
                         <span className="text-border">·</span>
@@ -994,12 +988,6 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
                     </>
                   )}
                   <span className="max-w-full truncate">{displayBranch}</span>
-                  {worktree.pr_number && (
-                    <>
-                      <span className="text-border">·</span>
-                      <span>#{worktree.pr_number}</span>
-                    </>
-                  )}
                   {worktree.security_alert_number && (
                     <>
                       <span className="text-border">·</span>
@@ -1041,6 +1029,7 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
                 )}
               </span>
             )}
+            <WorktreePrBadge worktree={worktree} />
             {markedSessionsBadge}
           </div>
           {showDetails && sessionMetrics && (

@@ -899,6 +899,8 @@ PR status polling (`projects/pr_status.rs`) uses REST. It does not use `gh pr vi
 
 PR auto-link (`projects/pr_autolink.rs`): a PR that the agent creates itself (`gh pr create` in Bash) is linked by the backend. On each `chat:done` for a worktree that is not a base session and has no PR link, Jean runs branch detection (`detect_and_link_pr_for_worktree`). On a match it saves the link, emits `cache:invalidate` for `projects`, and refreshes the PR status. This works with no client open.
 
+PR capsule: `WorktreePrBadge` shows the linked PR (status colour, click opens the PR) on sidebar rows and on canvas rows (desktop and mobile). `usePrStatusEvents()` is mounted once in `MainWindow`, so capsule colours stay live without a chat open.
+
 ### Headless Mode
 
 The embedded Axum HTTP server enables running Jean without the native window:

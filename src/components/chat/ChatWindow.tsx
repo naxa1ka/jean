@@ -245,7 +245,7 @@ import {
   useModelCatalog,
 } from '@/services/model-catalog'
 import { useAvailablePiModels } from '@/services/pi-cli'
-import { usePrStatus, usePrStatusEvents } from '@/services/pr-status'
+import { usePrStatus } from '@/services/pr-status'
 import type { PrDisplayStatus, CheckStatus } from '@/types/pr-status'
 import type { QueuedMessage, Session } from '@/types/chat'
 import type { DiffRequest } from '@/types/git-diff'
@@ -882,7 +882,6 @@ const ChatWindowContent = memo(function ChatWindowContent({
     gitStatus?.branch_diff_removed ?? worktree?.cached_branch_diff_removed ?? 0
 
   // PR status for dynamic PR button
-  usePrStatusEvents() // Listen for PR status updates
   const { data: prStatus } = usePrStatus(activeWorktreeId ?? null)
   // Use live status if available, otherwise fall back to cached
   const displayStatus =
