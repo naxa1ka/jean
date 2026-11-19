@@ -832,6 +832,20 @@ pub fn rename_branch(repo_path: &str, new_name: &str) -> Result<String, String> 
     Ok(final_name)
 }
 
+/// Move the current branch of `repo_path` to `target` and discard local changes
+/// (`git reset --hard <target>`).
+pub fn reset_hard(repo_path: &str, target: &str) -> Result<(), String> {
+    let output = wsl_aware_command("git", Some(Path::new(repo_path)))
+        .args(["reset", "--hard", target])
+        .output()
+        .map_err(|e| format!("Failed to run git reset: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git reset --hard {target} failed: {stderr}"));
+    }
+    Ok(())
+}
+
 /// Find a unique branch name by appending a random 4-char suffix
 fn find_unique_branch_name(repo_path: &str, base_name: &str) -> Result<String, String> {
     use rand::Rng;
@@ -2538,6 +2552,17 @@ pub fn run_setup_script(
     script: &str,
 ) -> Result<String, String> {
     run_jean_script("setup", worktree_path, root_path, branch, script)
+}
+
+/// Run the `scripts.claim` script in a pooled worktree when it is taken.
+/// Same environment variables as [`run_setup_script`].
+pub fn run_claim_script(
+    worktree_path: &str,
+    root_path: &str,
+    branch: &str,
+    script: &str,
+) -> Result<String, String> {
+    run_jean_script("claim", worktree_path, root_path, branch, script)
 }
 
 /// Run a teardown script in a worktree directory before deletion

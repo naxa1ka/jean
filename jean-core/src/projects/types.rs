@@ -233,6 +233,9 @@ pub struct JeanScripts {
     pub setup: Option<String>,
     /// Script to run before worktree deletion
     pub teardown: Option<String>,
+    /// Script to run when a pooled worktree is taken
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<String>,
     /// Script(s) to run the dev environment — string or array of strings
     pub run: Option<RunScript>,
 }
@@ -994,6 +997,13 @@ impl Worktree {
 mod tests {
     use super::*;
     use crate::projects::github_issues::{GitHubAuthor, GitHubComment, PullRequestContext};
+
+    #[test]
+    fn jean_config_parses_claim_script() {
+        let config: JeanConfig =
+            serde_json::from_str(r#"{"scripts":{"claim":"bun i"}}"#).expect("parse");
+        assert_eq!(config.scripts.claim, Some("bun i".into()));
+    }
 
     #[test]
     fn path_exists_event_preserves_pr_context_for_retry() {

@@ -59,6 +59,7 @@ use super::unmanaged_worktrees::{
     read_worktree_list_porcelain, reserved_checkout_import_error, worktree_path_is_tracked,
     UnmanagedWorktreeListing,
 };
+use super::worktree_pool;
 use crate::chat::types::{LabelData, Session, SessionMetadata, WorktreeSessions};
 use crate::claude_cli::resolve_cli_binary;
 use crate::coderabbit_cli::resolve_coderabbit_binary;
@@ -1930,6 +1931,20 @@ pub async fn create_worktree(
         false
     };
 
+    let project_worktrees_dir =
+        get_project_worktrees_dir(&project.name, project.worktrees_dir.as_deref())?;
+
+    // Take a ready worktree from the project's pool (skips `git worktree add`).
+    let pool_enabled = project
+        .worktree_pool_settings
+        .as_ref()
+        .is_some_and(|s| s.enabled);
+    let pooled = if worktree_pool::use_pool_for(pr_context.is_some()) {
+        worktree_pool::take(&app, &project)
+    } else {
+        None
+    };
+
     // Generate workspace name - use custom name, PR-based name, issue-based name, or random name
     let name = if let Some(custom) = custom_name {
         // Use the provided custom name. Uniqueness is enforced downstream via
@@ -2036,6 +2051,8 @@ pub async fn create_worktree(
         } else {
             issue_branch
         }
+    } else if let Some(entry) = &pooled {
+        entry.name.clone()
     } else {
         generate_unique_workspace_name(|n| {
             data.worktree_name_exists(&project_id, n) || git::branch_exists(&project.path, n)
@@ -2044,18 +2061,19 @@ pub async fn create_worktree(
 
     // Build worktree path: <base>/<project-name>/<folder-name>
     // Use sanitized name for folder path (branch name may contain slashes)
-    let project_worktrees_dir =
-        get_project_worktrees_dir(&project.name, project.worktrees_dir.as_deref())?;
     allow_project_in_asset_scope(&app, &project.path);
     if let Some(worktrees_dir) = project_worktrees_dir.to_str() {
         allow_project_in_asset_scope(&app, worktrees_dir);
     }
-    let folder_name = sanitize_folder_name(&name);
-    let worktree_path = project_worktrees_dir.join(&folder_name);
-    let worktree_path_str = worktree_path
-        .to_str()
-        .ok_or_else(|| "Invalid worktree path".to_string())?
-        .to_string();
+    // A pooled worktree keeps its folder; only its branch is renamed.
+    let worktree_path_str = match &pooled {
+        Some(entry) => entry.path.clone(),
+        None => project_worktrees_dir
+            .join(sanitize_folder_name(&name))
+            .to_str()
+            .ok_or_else(|| "Invalid worktree path".to_string())?
+            .to_string(),
+    };
 
     // Generate ID upfront so we can track this worktree
     let worktree_id = Uuid::new_v4().to_string();
@@ -2158,6 +2176,7 @@ pub async fn create_worktree(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let mut name_clone = name_clone;
             let mut worktree_path_clone = worktree_path_clone;
+            let mut pooled = pooled;
             log::trace!("Background: Creating git worktree {name_clone} at {worktree_path_clone}");
 
             let effective_base = resolve_start_point(
@@ -2167,7 +2186,7 @@ pub async fn create_worktree(
                 should_auto_pull,
             );
 
-            if should_auto_resolve_worktree_conflict(&worktree_origin_clone) {
+            if pooled.is_none() && should_auto_resolve_worktree_conflict(&worktree_origin_clone) {
                 let mut resolved = false;
                 for _ in 0..10 {
                     let worktree_path = std::path::Path::new(&worktree_path_clone);
@@ -2215,7 +2234,7 @@ pub async fn create_worktree(
 
             // Check if path already exists
             let worktree_path = std::path::Path::new(&worktree_path_clone);
-            if worktree_path.exists() {
+            if pooled.is_none() && worktree_path.exists() {
                 log::trace!("Background: Path already exists: {worktree_path_clone}");
 
                 // Generate a suggested alternative name with random suffix
@@ -2277,9 +2296,21 @@ pub async fn create_worktree(
                         ctx.head_ref_name.clone(),
                     )
                 } else {
-                    // Check if branch already exists for non-PR cases
-                    if git::branch_exists(&project_path, &name_clone) {
+                    // Check if branch already exists for non-PR cases. A pooled
+                    // worktree owns its branch; a rename under auto-fix picks a
+                    // unique name itself.
+                    let check_branch = match &pooled {
+                        Some(entry) => {
+                            name_clone != entry.branch
+                                && !should_auto_resolve_worktree_conflict(&worktree_origin_clone)
+                        }
+                        None => true,
+                    };
+                    if check_branch && git::branch_exists(&project_path, &name_clone) {
                         log::trace!("Background: Branch already exists: {name_clone}");
+                        if let Some(entry) = pooled.take() {
+                            worktree_pool::release(&app_clone, entry);
+                        }
 
                         // Generate a suggested alternative name with random suffix
                         let suggested_name = {
@@ -2324,24 +2355,38 @@ pub async fn create_worktree(
                     (name_clone.clone(), None, name_clone.clone())
                 };
 
-            // Create the git worktree (this is the slow operation)
-            if let Err(e) = git::create_worktree(
-                &project_path,
-                &worktree_path_clone,
-                &branch_for_worktree,
-                &effective_base,
-            ) {
-                log::error!("Background: Failed to create worktree: {e}");
-                let error_event = WorktreeCreateErrorEvent {
-                    id: worktree_id_clone,
-                    project_id: project_id_clone,
-                    error: e,
-                };
-                if let Err(emit_err) = app_clone.emit_all("worktree:error", &error_event) {
-                    log::error!("Failed to emit worktree:error event: {emit_err}");
+            // Create the git worktree (this is the slow operation), or reset and
+            // rename a pooled one.
+            let create_result = match &pooled {
+                Some(entry) => {
+                    worktree_pool::prepare_taken(entry, &name_clone, &effective_base).map(Some)
                 }
-                return;
-            }
+                None => git::create_worktree(
+                    &project_path,
+                    &worktree_path_clone,
+                    &branch_for_worktree,
+                    &effective_base,
+                )
+                .map(|_| None),
+            };
+            let pooled_branch = match create_result {
+                Ok(branch) => branch,
+                Err(e) => {
+                    log::error!("Background: Failed to create worktree: {e}");
+                    if let Some(entry) = pooled.take() {
+                        worktree_pool::discard(&app_clone, entry);
+                    }
+                    let error_event = WorktreeCreateErrorEvent {
+                        id: worktree_id_clone,
+                        project_id: project_id_clone,
+                        error: e,
+                    };
+                    if let Err(emit_err) = app_clone.emit_all("worktree:error", &error_event) {
+                        log::error!("Failed to emit worktree:error event: {emit_err}");
+                    }
+                    return;
+                }
+            };
 
             log::trace!("Background: Git worktree created successfully");
 
@@ -2428,7 +2473,7 @@ pub async fn create_worktree(
                     }
                 }
             } else {
-                actual_branch_name
+                pooled_branch.unwrap_or(actual_branch_name)
             };
 
             // Remember fork remotes added by `gh pr checkout` so clearing/deleting
@@ -2716,9 +2761,17 @@ pub async fn create_worktree(
             // Check for jean.json setup script upfront so we can include it in the
             // initial worktree record. This lets the frontend know a setup script
             // will run (setup_script is set, but setup_output is still None).
-            let pending_setup_script =
-                git::resolve_jean_config(&worktree_path_clone, Some(&project_path))
-                    .and_then(|config| config.scripts.setup);
+            // A pooled worktree ran `setup` when the pool created it; it runs `claim` now.
+            let scripts = git::resolve_jean_config(&worktree_path_clone, Some(&project_path))
+                .map(|config| config.scripts)
+                .unwrap_or_default();
+            let pending_setup_script = if pooled.is_some() {
+                scripts.claim
+            } else {
+                scripts.setup
+            };
+            // Pooled without a claim script: keep the setup results of the pool.
+            let pool_setup = pooled.as_ref().filter(|_| pending_setup_script.is_none());
 
             // Save to storage and emit worktree:created BEFORE running setup script
             // so the UI can open immediately and the user can start typing.
@@ -2743,9 +2796,11 @@ pub async fn create_worktree(
                     base_branch: Some(base_clone.clone()),
                     base_remote: base_remote_clone.clone(),
                     created_at,
-                    setup_output: None,
-                    setup_script: pending_setup_script.clone(),
-                    setup_success: None,
+                    setup_output: pool_setup.and_then(|e| e.setup_output.clone()),
+                    setup_script: pending_setup_script
+                        .clone()
+                        .or_else(|| pool_setup.and_then(|e| e.setup_script.clone())),
+                    setup_success: pool_setup.and_then(|e| e.setup_success),
                     session_type: SessionType::Worktree,
                     pr_number: pr_context_clone.as_ref().map(|ctx| ctx.number),
                     pr_url: None,
@@ -2812,6 +2867,26 @@ pub async fn create_worktree(
                 if let Err(e) = app_clone.emit_all("worktree:created", &created_event) {
                     log::error!("Failed to emit worktree:created event: {e}");
                 }
+
+                // The pool ran setup earlier: close the frontend's setup toast now.
+                if let Some(entry) = pool_setup {
+                    if let Some(script) = &entry.setup_script {
+                        let setup_event = WorktreeSetupCompleteEvent {
+                            id: worktree_id_clone.clone(),
+                            project_id: project_id_clone.clone(),
+                            setup_output: entry.setup_output.clone().unwrap_or_default(),
+                            setup_script: script.clone(),
+                            setup_success: entry.setup_success.unwrap_or(false),
+                        };
+                        if let Err(e) = app_clone.emit_all("worktree:setup_complete", &setup_event)
+                        {
+                            log::error!("Failed to emit worktree:setup_complete event: {e}");
+                        }
+                    }
+                }
+                if pool_enabled {
+                    worktree_pool::schedule_reconcile(&app_clone, &project_id_clone);
+                }
             } else {
                 log::error!("Background: Failed to load projects data for saving");
                 let error_event = WorktreeCreateErrorEvent {
@@ -2828,18 +2903,19 @@ pub async fn create_worktree(
             // Run setup script AFTER emitting worktree:created (user can already type)
             if let Some(script) = pending_setup_script {
                 log::trace!("Background: Found jean.json with setup script, executing...");
-                let (setup_output, setup_success) = match git::run_setup_script(
-                    &worktree_path_clone,
-                    &project_path,
-                    &final_branch,
-                    &script,
-                ) {
-                    Ok(output) => (output, true),
-                    Err(e) => {
-                        log::warn!("Background: Setup script failed (continuing): {e}");
-                        (e, false)
-                    }
+                let run_script = if pooled.is_some() {
+                    git::run_claim_script
+                } else {
+                    git::run_setup_script
                 };
+                let (setup_output, setup_success) =
+                    match run_script(&worktree_path_clone, &project_path, &final_branch, &script) {
+                        Ok(output) => (output, true),
+                        Err(e) => {
+                            log::warn!("Background: Setup script failed (continuing): {e}");
+                            (e, false)
+                        }
+                    };
 
                 // Update worktree in storage with setup results
                 if let Ok(mut data) = load_projects_data(&app_clone) {

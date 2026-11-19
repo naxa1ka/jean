@@ -250,6 +250,61 @@ fn take_entries(
     })
 }
 
+/// Creates without a PR context use the pool. PR worktrees need `gh pr checkout`.
+pub fn use_pool_for(pr_context_present: bool) -> bool {
+    !pr_context_present
+}
+
+/// Take the oldest ready worktree of `project`. `None` when its pool is off or empty.
+pub fn take(app: &AppHandle, project: &Project) -> Option<PoolEntry> {
+    let enabled = project
+        .worktree_pool_settings
+        .as_ref()
+        .is_some_and(|s| s.enabled);
+    if !enabled {
+        return None;
+    }
+    match take_entries(app, &project.id, Some(1)) {
+        Ok(mut entries) => entries.pop(),
+        Err(e) => {
+            log::warn!("Worktree pool: take failed for {}: {e}", project.id);
+            None
+        }
+    }
+}
+
+fn put_back(app: &AppHandle, entry: PoolEntry) -> Result<(), String> {
+    with_pool_mut(app, |data| data.entries.push(entry))
+}
+
+/// Put a taken, unchanged worktree back into the pool.
+pub fn release(app: &AppHandle, entry: PoolEntry) {
+    let project_id = entry.project_id.clone();
+    if let Err(e) = put_back(app, entry) {
+        log::warn!("Worktree pool: release failed for {project_id}: {e}");
+    }
+    schedule_reconcile(app, &project_id);
+}
+
+/// Remove a taken worktree that could not be prepared (background thread).
+pub fn discard(app: &AppHandle, entry: PoolEntry) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        remove_entry_checkout(&entry, true);
+        reconcile_project(&app, &entry.project_id);
+    });
+}
+
+/// Reset a taken worktree to `start_point` and rename its branch to `name`.
+/// Returns the final branch name (`rename_branch` makes it unique when taken).
+pub fn prepare_taken(entry: &PoolEntry, name: &str, start_point: &str) -> Result<String, String> {
+    git::reset_hard(&entry.path, start_point)?;
+    if name == entry.branch {
+        return Ok(entry.branch.clone());
+    }
+    git::rename_branch(&entry.path, name)
+}
+
 fn remove_entry_checkout(entry: &PoolEntry, run_teardown: bool) {
     if run_teardown && Path::new(&entry.path).join(".git").exists() {
         let teardown = git::resolve_jean_config(&entry.path, Some(&entry.project_path))
@@ -266,7 +321,10 @@ fn remove_entry_checkout(entry: &PoolEntry, run_teardown: bool) {
         log::warn!("Worktree pool: failed to remove {}: {e}", entry.path);
     }
     if let Err(e) = git::delete_branch(&entry.project_path, &entry.branch) {
-        log::warn!("Worktree pool: failed to delete branch {}: {e}", entry.branch);
+        log::warn!(
+            "Worktree pool: failed to delete branch {}: {e}",
+            entry.branch
+        );
     }
 }
 
@@ -506,6 +564,147 @@ mod tests {
         );
     }
 
+    fn project(pool: Option<bool>) -> Project {
+        let mut value = serde_json::json!({
+            "id": "p1",
+            "name": "demo",
+            "path": "/repo",
+            "default_branch": "main",
+            "added_at": 1
+        });
+        if let Some(enabled) = pool {
+            value["worktree_pool_settings"] =
+                serde_json::json!({ "enabled": enabled, "min_idle": 1, "max_idle": 2 });
+        }
+        serde_json::from_value(value).expect("project")
+    }
+
+    fn entry_at(project_id: &str, path: &str, created_at: u64) -> PoolEntry {
+        PoolEntry {
+            created_at,
+            ..entry(project_id, path)
+        }
+    }
+
+    #[test]
+    fn take_removes_entry_and_second_take_gets_next() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = test_app(temp.path());
+        let newer = entry_at("p1", "/wt/newer", 20);
+        let older = entry_at("p1", "/wt/older", 10);
+        with_pool_mut(&app, |data| {
+            data.entries.push(newer.clone());
+            data.entries.push(entry_at("p2", "/wt/other", 1));
+            data.entries.push(older.clone());
+        })
+        .expect("write pool");
+        let project = project(Some(true));
+
+        assert_eq!(take(&app, &project).map(|e| e.id), Some(older.id));
+        assert_eq!(take(&app, &project).map(|e| e.id), Some(newer.id));
+        assert_eq!(take(&app, &project), None);
+        assert_eq!(
+            pool_paths_for_project(&app, "p2"),
+            vec!["/wt/other".to_string()]
+        );
+    }
+
+    #[test]
+    fn take_returns_none_when_pool_disabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = test_app(temp.path());
+        with_pool_mut(&app, |data| data.entries.push(entry("p1", "/wt/a"))).expect("write pool");
+
+        assert_eq!(take(&app, &project(Some(false))), None);
+        assert_eq!(take(&app, &project(None)), None);
+        assert_eq!(pool_paths_for_project(&app, "p1").len(), 1);
+    }
+
+    #[test]
+    fn release_puts_entry_back() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = test_app(temp.path());
+        with_pool_mut(&app, |data| data.entries.push(entry("p1", "/wt/a"))).expect("write pool");
+        let taken = take(&app, &project(Some(true))).expect("taken");
+        assert!(pool_paths_for_project(&app, "p1").is_empty());
+
+        // `release` also schedules a reconcile; test only the put-back part.
+        put_back(&app, taken.clone()).expect("put back");
+
+        assert_eq!(read_pool(&app).expect("read").entries, vec![taken]);
+    }
+
+    #[test]
+    fn worktree_pool_use_pool_for() {
+        assert!(!use_pool_for(true));
+        assert!(use_pool_for(false));
+    }
+
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let output = crate::platform::silent_command("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// Repo with two commits and a pool-like worktree `calm-otter` at commit 1.
+    fn repo_with_pooled_worktree(root: &Path) -> (PoolEntry, String, PathBuf) {
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).expect("repo dir");
+        run_git(&repo, &["init", "--initial-branch", "main"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("a.txt"), "one").expect("write");
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "one"]);
+        let commit1 = git_out(&repo, &["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("a.txt"), "two").expect("write");
+        run_git(&repo, &["commit", "-am", "two"]);
+        let commit2 = git_out(&repo, &["rev-parse", "HEAD"]);
+        let wt = root.join("calm-otter");
+        let wt_str = wt.to_str().expect("path").to_string();
+        run_git(
+            &repo,
+            &["worktree", "add", "-b", "calm-otter", &wt_str, &commit1],
+        );
+        let entry = PoolEntry {
+            project_path: repo.to_str().expect("path").to_string(),
+            name: "calm-otter".to_string(),
+            branch: "calm-otter".to_string(),
+            ..entry("p1", &wt_str)
+        };
+        (entry, commit2, wt)
+    }
+
+    #[test]
+    fn prepare_taken_resets_to_start_point_and_renames() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (entry, commit2, wt) = repo_with_pooled_worktree(temp.path());
+
+        assert_eq!(
+            prepare_taken(&entry, "my-feature", &commit2),
+            Ok("my-feature".to_string())
+        );
+        assert_eq!(git_out(&wt, &["rev-parse", "HEAD"]), commit2);
+        assert_eq!(git_out(&wt, &["branch", "--show-current"]), "my-feature");
+    }
+
+    #[test]
+    fn prepare_taken_keeps_branch_when_name_matches() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (entry, commit2, wt) = repo_with_pooled_worktree(temp.path());
+
+        assert_eq!(
+            prepare_taken(&entry, "calm-otter", &commit2),
+            Ok("calm-otter".to_string())
+        );
+        assert_eq!(git_out(&wt, &["branch", "--show-current"]), "calm-otter");
+        assert_eq!(git_out(&wt, &["rev-parse", "HEAD"]), commit2);
+    }
+
     #[test]
     fn worktree_pool_reconcile_fills_and_trims() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -543,7 +742,10 @@ mod tests {
         let paths = pool_paths_for_project(&app, "p1");
         assert_eq!(paths.len(), 2);
         for path in &paths {
-            assert!(Path::new(path).join(".git").exists(), "{path} not a checkout");
+            assert!(
+                Path::new(path).join(".git").exists(),
+                "{path} not a checkout"
+            );
         }
 
         write_projects(false);

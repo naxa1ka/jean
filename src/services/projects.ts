@@ -2499,6 +2499,8 @@ export interface JeanConfig {
   scripts: {
     setup: string | null
     teardown: string | null
+    /** Runs when a pooled worktree is taken */
+    claim?: string | null
     run: string | string[] | null
   }
   ports?: PortEntry[] | null
