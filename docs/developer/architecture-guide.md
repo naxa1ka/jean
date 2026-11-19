@@ -803,6 +803,34 @@ runs it at startup and every 24 hours from `initialize_runtime` in
 30 days after their archive time. Closing a worktree deletes the git worktree
 and its branch immediately.
 
+### Worktree pool
+
+A project can keep ready worktrees (`git worktree add` and the `jean.json`
+`setup` script already done). Code: `jean-core/src/projects/worktree_pool.rs`.
+
+- **Settings**: `Project.worktree_pool_settings` (`enabled`, `min_idle`,
+  `max_idle`, `1 <= min <= max <= 10`), saved via `update_project_settings`
+  (`worktreePoolSettings`). UI: Project Settings → General → "Worktree pool".
+  `get_worktree_pool_status` returns `{ idle, filling }` for the live count.
+- **Storage**: `<app_data>/worktree_pool.json`. Pool worktrees are not in
+  `projects.json`, so the sidebar, lists, MCP, and auto-fix do not see them.
+- **Maintainer**: `start_pool_maintainer` reconciles every project at startup and
+  every 10 minutes. `schedule_reconcile` also runs after a settings save and
+  after a take. Refill starts below `min_idle` and fills up to `max_idle`; a
+  disabled pool removes its idle worktrees.
+- **Take path** (`create_worktree`): `take` pops the oldest entry,
+  `prepare_taken` resets it to the start point and renames its branch to the new
+  name. On a name conflict the entry goes back with `release`; if prepare fails
+  it is removed with `discard`.
+- **Claim script**: a taken worktree runs `scripts.claim` from `jean.json`
+  instead of `setup` (setup ran when the pool made it). With no claim script it
+  keeps the pool's setup results.
+- **Not pooled**: creates with a PR context (they need `gh pr checkout`),
+  worktrees from an existing branch, and fork-session worktrees. They use their
+  own commands and always run `git worktree add`.
+- **Import**: pool paths count as tracked worktrees (`pool_paths_for_project`),
+  so import does not offer them as unknown worktrees.
+
 ## Performance Patterns
 
 ### The `getState()` Pattern (Critical)

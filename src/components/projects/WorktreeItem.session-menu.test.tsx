@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
 import { fireEvent, render, screen } from '@/test/test-utils'
 import type { Worktree } from '@/types/projects'
+import type * as PreferencesService from '@/services/preferences'
 import { useProjectsStore } from '@/store/projects-store'
 import { useSubSessionStore } from '@/store/sub-session-store'
 import { WorktreeItem } from './WorktreeItem'
@@ -22,7 +23,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/services/preferences', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/services/preferences')>()),
+  ...(await importOriginal<typeof PreferencesService>()),
   usePreferences: () => ({
     data: { close_confirm_bypass_modifier: mocks.bypassModifier },
   }),
