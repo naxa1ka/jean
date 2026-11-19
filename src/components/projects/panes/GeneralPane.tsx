@@ -182,25 +182,35 @@ export function GeneralPane({
   const savePoolSettings = (next: ProjectWorktreePoolSettings) =>
     updateSettings.mutate({ projectId, worktreePoolSettings: next })
   // A new min raises max when needed; a new max lowers min when needed.
+  // The inputs are disabled while a save runs, so the next edit starts from saved data.
   const commitPoolCount = (field: 'min_idle' | 'max_idle') => {
     const local = field === 'min_idle' ? localPoolMin : localPoolMax
     if (local === null) return
-    if (field === 'min_idle') setLocalPoolMin(null)
-    else setLocalPoolMax(null)
+    const clearLocal = () =>
+      field === 'min_idle' ? setLocalPoolMin(null) : setLocalPoolMax(null)
     const value = clampPoolCount(Number(local), poolSettings[field])
-    if (value === poolSettings[field]) return
-    savePoolSettings(
-      field === 'min_idle'
-        ? {
-            ...poolSettings,
-            min_idle: value,
-            max_idle: Math.max(value, poolSettings.max_idle),
-          }
-        : {
-            ...poolSettings,
-            max_idle: value,
-            min_idle: Math.min(value, poolSettings.min_idle),
-          }
+    // Empty or unchanged: nothing to save, show the saved value again.
+    if (local.trim() === '' || value === poolSettings[field]) {
+      clearLocal()
+      return
+    }
+    updateSettings.mutate(
+      {
+        projectId,
+        worktreePoolSettings:
+          field === 'min_idle'
+            ? {
+                ...poolSettings,
+                min_idle: value,
+                max_idle: Math.max(value, poolSettings.max_idle),
+              }
+            : {
+                ...poolSettings,
+                max_idle: value,
+                min_idle: Math.min(value, poolSettings.min_idle),
+              },
+      },
+      { onSettled: clearLocal }
     )
   }
 
@@ -681,14 +691,16 @@ export function GeneralPane({
 
         <SettingsSection
           title="Worktree pool"
-          description="Jean keeps worktrees ready, with setup already done. A new worktree takes one from the pool. Pool worktrees are reset to the latest base branch when taken."
+          description="Jean keeps worktrees ready, with setup already done. A new worktree takes one from the pool. Pool worktrees are reset to the base branch when taken."
         >
           <InlineField
             label="Keep ready worktrees"
             description={
-              poolSettings.enabled && poolStatus
-                ? `${poolStatus.idle} ready, ${poolStatus.filling} preparing`
-                : 'Off by default'
+              !poolSettings.enabled
+                ? 'Off by default'
+                : poolStatus
+                  ? `${poolStatus.idle} ready, ${poolStatus.filling} preparing`
+                  : 'Loading status…'
             }
             htmlFor="project-worktree-pool-enabled"
           >
@@ -718,6 +730,7 @@ export function GeneralPane({
                   onChange={e => setLocalPoolMin(e.target.value)}
                   onBlur={() => commitPoolCount('min_idle')}
                   onKeyDown={blurOnEnter}
+                  disabled={updateSettings.isPending}
                   className="w-24 text-base md:text-sm"
                 />
               </InlineField>
@@ -735,6 +748,7 @@ export function GeneralPane({
                   onChange={e => setLocalPoolMax(e.target.value)}
                   onBlur={() => commitPoolCount('max_idle')}
                   onKeyDown={blurOnEnter}
+                  disabled={updateSettings.isPending}
                   className="w-24 text-base md:text-sm"
                 />
               </InlineField>

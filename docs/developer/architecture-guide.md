@@ -816,15 +816,25 @@ A project can keep ready worktrees (`git worktree add` and the `jean.json`
   `projects.json`, so the sidebar, lists, MCP, and auto-fix do not see them.
 - **Maintainer**: `start_pool_maintainer` reconciles every project at startup and
   every 10 minutes. `schedule_reconcile` also runs after a settings save and
-  after a take. Refill starts below `min_idle` and fills up to `max_idle`; a
-  disabled pool removes its idle worktrees.
-- **Take path** (`create_worktree`): `take` pops the oldest entry,
+  after a take, a worktrees-dir change, and a project removal. Refill starts
+  below `min_idle` and fills up to `max_idle`; a disabled pool removes its idle
+  worktrees. A reconcile asked for while one runs is not lost: the running one
+  stops filling and runs again with fresh settings (`FillGuard`).
+- **Busy entries**: an entry with `busy: true` is not idle (it is being set up,
+  claimed, or removed). It stays in `worktree_pool.json` until that ends, so a
+  crash leaves a trace. `cleanup_stale_entries` runs once at start and removes
+  busy entries and their checkouts, except those whose folder is already a
+  registered worktree (those are only forgotten). Entries outside the project's
+  current worktrees dir are replaced by reconcile and skipped by `take`.
+- **Take path** (`create_worktree`): `take` marks the oldest entry busy,
   `prepare_taken` resets it to the start point and renames its branch to the new
-  name. On a name conflict the entry goes back with `release`; if prepare fails
-  it is removed with `discard`.
+  name. After the new worktree is saved, `forget` drops the entry. On a name
+  conflict the entry goes back with `release`; if prepare fails it is removed
+  with `discard_now` and a fresh worktree is created instead.
 - **Claim script**: a taken worktree runs `scripts.claim` from `jean.json`
   instead of `setup` (setup ran when the pool made it). With no claim script it
-  keeps the pool's setup results.
+  keeps the pool's setup results, unless `scripts.setup` changed since the pool
+  ran it; then `setup` runs at claim time.
 - **Not pooled**: creates with a PR context (they need `gh pr checkout`),
   worktrees from an existing branch, and fork-session worktrees. They use their
   own commands and always run `git worktree add`.

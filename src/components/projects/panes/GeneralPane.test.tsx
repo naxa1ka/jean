@@ -178,7 +178,8 @@ describe('GeneralPane worktree pool', () => {
     expect(mocks.updateSettings).toHaveBeenLastCalledWith(
       expect.objectContaining({
         worktreePoolSettings: { enabled: true, min_idle: 1, max_idle: 1 },
-      })
+      }),
+      expect.anything()
     )
 
     const min = screen.getByLabelText('Min ready')
@@ -187,7 +188,8 @@ describe('GeneralPane worktree pool', () => {
     expect(mocks.updateSettings).toHaveBeenLastCalledWith(
       expect.objectContaining({
         worktreePoolSettings: { enabled: true, min_idle: 4, max_idle: 4 },
-      })
+      }),
+      expect.anything()
     )
 
     fireEvent.change(min, { target: { value: '50' } })
@@ -195,7 +197,25 @@ describe('GeneralPane worktree pool', () => {
     expect(mocks.updateSettings).toHaveBeenLastCalledWith(
       expect.objectContaining({
         worktreePoolSettings: { enabled: true, min_idle: 10, max_idle: 10 },
-      })
+      }),
+      expect.anything()
     )
+  })
+
+  it('shows the saved value again when the input is left empty', () => {
+    mocks.projects = [
+      {
+        ...project('avatars/a.png'),
+        worktree_pool_settings: { enabled: true, min_idle: 2, max_idle: 3 },
+      },
+    ]
+    render(<GeneralPane projectId="project-1" projectPath="/projects/jean" />)
+
+    const min = screen.getByLabelText('Min ready')
+    fireEvent.change(min, { target: { value: '' } })
+    fireEvent.blur(min)
+
+    expect(mocks.updateSettings).not.toHaveBeenCalled()
+    expect(min).toHaveValue(2)
   })
 })
