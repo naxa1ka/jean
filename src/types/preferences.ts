@@ -1332,11 +1332,12 @@ export function resolveMagicPromptBackend(
 }
 
 /** Modifier held while closing a session to skip the confirmation dialog ('none' disables). */
-export type CloseConfirmBypassModifier = 'shift' | 'alt' | 'none'
+export type CloseConfirmBypassModifier = 'shift' | 'alt' | 'ctrl' | 'none'
 
 export const CLOSE_CONFIRM_BYPASS_MODIFIERS = [
   'shift',
   'alt',
+  'ctrl',
   'none',
 ] as const satisfies readonly CloseConfirmBypassModifier[]
 

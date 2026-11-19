@@ -17,6 +17,15 @@ const mocks = vi.hoisted(() => ({
   remove: vi.fn(),
   removeMany: vi.fn(),
   rename: vi.fn(),
+  archive: vi.fn(),
+  bypassModifier: 'none' as string,
+}))
+
+vi.mock('@/services/preferences', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/services/preferences')>()),
+  usePreferences: () => ({
+    data: { close_confirm_bypass_modifier: mocks.bypassModifier },
+  }),
 }))
 
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
@@ -70,6 +79,7 @@ vi.mock('@/components/chat/session-card-utils', () => ({
 vi.mock('./useWorktreeMenuActions', () => ({
   useWorktreeMenuActions: () => ({
     handleClose: vi.fn(),
+    handleArchive: mocks.archive,
   }),
 }))
 vi.mock('./WorktreeContextMenu', () => ({
@@ -145,6 +155,7 @@ function middleClick(element: HTMLElement, init: MouseEventInit = {}) {
 describe('WorktreeItem session context menu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.bypassModifier = 'none'
     mocks.sessions = [
       { id: 's1', name: 'Busy chat', messages: [], message_count: 3 },
       { id: 's2', name: 'Empty chat', messages: [] },
@@ -200,11 +211,45 @@ describe('WorktreeItem session context menu', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('confirms a middle-click close of the worktree, even with Shift held', () => {
+  it('confirms a middle-click close of the worktree when no bypass modifier is set', () => {
     renderExpanded()
 
     middleClick(screen.getByText('feature'), { shiftKey: true })
 
+    expect(mocks.archive).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('button', { name: 'confirm worktree' })
+    ).toBeInTheDocument()
+  })
+
+  it('archives the worktree on middle-click while the bypass modifier is held', () => {
+    mocks.bypassModifier = 'shift'
+    renderExpanded()
+
+    middleClick(screen.getByText('feature'), { shiftKey: true })
+
+    expect(mocks.archive).toHaveBeenCalledTimes(1)
+    expect(
+      screen.queryByRole('button', { name: 'confirm worktree' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('archives the worktree on Ctrl+middle-click when Ctrl is the bypass modifier', () => {
+    mocks.bypassModifier = 'ctrl'
+    renderExpanded()
+
+    middleClick(screen.getByText('feature'), { ctrlKey: true })
+
+    expect(mocks.archive).toHaveBeenCalledTimes(1)
+  })
+
+  it('still confirms a plain middle-click when a bypass modifier is set', () => {
+    mocks.bypassModifier = 'ctrl'
+    renderExpanded()
+
+    middleClick(screen.getByText('feature'))
+
+    expect(mocks.archive).not.toHaveBeenCalled()
     expect(
       screen.getByRole('button', { name: 'confirm worktree' })
     ).toBeInTheDocument()

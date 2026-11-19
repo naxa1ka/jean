@@ -67,6 +67,15 @@ describe('hasCloseConfirmBypassModifier', () => {
     )
   })
 
+  it('detects ctrl held / not held', () => {
+    expect(hasCloseConfirmBypassModifier(evt({ ctrlKey: true }), 'ctrl')).toBe(
+      true
+    )
+    expect(hasCloseConfirmBypassModifier(evt({ shiftKey: true }), 'ctrl')).toBe(
+      false
+    )
+  })
+
   it('returns false for none even with every modifier held', () => {
     expect(
       hasCloseConfirmBypassModifier(
@@ -92,6 +101,7 @@ describe('resolveCloseConfirmBypassModifier', () => {
   it('passes known modifiers through', () => {
     expect(resolveCloseConfirmBypassModifier('shift')).toBe('shift')
     expect(resolveCloseConfirmBypassModifier('alt')).toBe('alt')
+    expect(resolveCloseConfirmBypassModifier('ctrl')).toBe('ctrl')
     expect(resolveCloseConfirmBypassModifier('none')).toBe('none')
   })
 
@@ -132,6 +142,7 @@ describe('closeConfirmBypassLabel', () => {
   it('returns a label for every non-none modifier', () => {
     expect(closeConfirmBypassLabel('shift')).not.toBeNull()
     expect(closeConfirmBypassLabel('alt')).not.toBeNull()
+    expect(closeConfirmBypassLabel('ctrl')).not.toBeNull()
   })
 
   it('returns null only for none', () => {
@@ -142,5 +153,10 @@ describe('closeConfirmBypassLabel', () => {
     setPlatform({ isClientMacOS: true })
     expect(closeConfirmBypassLabel('shift')).toBe('⇧')
     expect(closeConfirmBypassLabel('alt')).toBe('⌥')
+    expect(closeConfirmBypassLabel('ctrl')).toBe('⌃')
+  })
+
+  it('uses the word Ctrl off macOS', () => {
+    expect(closeConfirmBypassLabel('ctrl')).toBe('Ctrl')
   })
 })
