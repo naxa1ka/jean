@@ -20,6 +20,16 @@ export interface ProjectPlanQueueSettings {
   fix_findings?: boolean
 }
 
+/** Per-project pool of ready worktrees. `1 <= min_idle <= max_idle <= 10`. */
+export interface ProjectWorktreePoolSettings {
+  /** The maintainer keeps idle worktrees only when true. Default false. */
+  enabled: boolean
+  /** Refill starts when fewer idle worktrees are ready. Default 1. */
+  min_idle: number
+  /** Refill fills up to this count; extra idle worktrees are removed. Default 2. */
+  max_idle: number
+}
+
 export interface ProjectAutoFixSettings {
   enabled: boolean
   interval_minutes: number
@@ -180,6 +190,7 @@ export interface Project {
   auto_fix_settings?: ProjectAutoFixSettings | null
   /** Per-project native plan queue settings */
   plan_queue_settings?: ProjectPlanQueueSettings | null
+  worktree_pool_settings?: ProjectWorktreePoolSettings | null
   /** Number of active worktrees, included in the lightweight project list response */
   worktree_count?: number
   /** Whether an active base-branch session exists */

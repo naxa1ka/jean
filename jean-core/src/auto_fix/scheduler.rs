@@ -1409,6 +1409,7 @@ fn project_from_pending_auto_yolo(entry: &PendingAutoYolo) -> Project {
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
         plan_queue_settings: None,
+        worktree_pool_settings: None,
         server: None,
     }
 }
@@ -1728,6 +1729,7 @@ mod tests {
             linked_project_ids: Vec::new(),
             auto_fix_settings,
             plan_queue_settings: None,
+            worktree_pool_settings: None,
             server: None,
         }
     }

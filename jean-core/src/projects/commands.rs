@@ -813,6 +813,7 @@ pub async fn add_project(
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
         plan_queue_settings: None,
+        worktree_pool_settings: None,
         server: None,
     };
 
@@ -977,6 +978,7 @@ pub async fn init_project(
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
         plan_queue_settings: None,
+        worktree_pool_settings: None,
         server: None,
     };
 
@@ -1039,6 +1041,7 @@ pub async fn clone_project(
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
         plan_queue_settings: None,
+        worktree_pool_settings: None,
         server: None,
     };
 
@@ -1792,6 +1795,58 @@ fn copy_session_run_files(
     Ok(())
 }
 
+/// Git start point for a new worktree from `base`. Fetches first when the base is
+/// remote-qualified or `should_auto_pull` is on, and prefers `origin/<base>` over a
+/// stale local branch.
+pub(crate) fn resolve_start_point(
+    project_path: &str,
+    base: &str,
+    base_remote: Option<&str>,
+    should_auto_pull: bool,
+) -> String {
+    // Fetch base branch if enabled, use origin/<base> for up-to-date start point.
+    // If the base is only available as a remote-tracking branch (e.g. stacking on a
+    // PR head that wasn't fetched locally), also use the origin/<base> ref.
+    let has_local_branch = git::branch_exists(project_path, base);
+    if let Some(remote) = base_remote {
+        // Explicitly remote-qualified base: always start from that remote's
+        // ref, refreshing it first so "from <remote>/<base>" is up to date.
+        if let Err(e) = git::git_fetch(project_path, base, Some(remote)) {
+            log::warn!("Failed to fetch {remote}/{base}: {e}");
+        }
+        format!("{remote}/{base}")
+    } else if should_auto_pull {
+        log::trace!("Fetching base branch {base} before worktree creation");
+        match git::git_fetch(project_path, base, None) {
+            Ok(_) => {
+                log::trace!("Successfully fetched, using origin/{base}");
+                format!("origin/{base}")
+            }
+            Err(e) => {
+                // Prefer the remote-tracking tip over a stale local branch even
+                // when the network fetch fails — local main/v4.x is often days
+                // behind origin and would leave the new worktree missing commits.
+                log::warn!("Failed to fetch base branch {base}: {e}");
+                if git::remote_branch_exists(project_path, base) {
+                    format!("origin/{base}")
+                } else if has_local_branch {
+                    base.to_string()
+                } else {
+                    format!("origin/{base}")
+                }
+            }
+        }
+    } else if git::remote_branch_exists(project_path, base) {
+        // auto_pull off: still prefer origin/<base> when we already have it
+        // so a stale local checkout of e.g. v4.x is not used as the start point.
+        format!("origin/{base}")
+    } else if has_local_branch {
+        base.to_string()
+    } else {
+        format!("origin/{base}")
+    }
+}
+
 /// Create a new worktree for a project (runs in background)
 ///
 /// This command returns immediately with a "pending" worktree.
@@ -2105,47 +2160,12 @@ pub async fn create_worktree(
             let mut worktree_path_clone = worktree_path_clone;
             log::trace!("Background: Creating git worktree {name_clone} at {worktree_path_clone}");
 
-            // Fetch base branch if enabled, use origin/<base> for up-to-date start point.
-            // If the base is only available as a remote-tracking branch (e.g. stacking on a
-            // PR head that wasn't fetched locally), also use the origin/<base> ref.
-            let has_local_branch = git::branch_exists(&project_path, &base_clone);
-            let effective_base = if let Some(remote) = base_remote_clone.as_deref() {
-                // Explicitly remote-qualified base: always start from that remote's
-                // ref, refreshing it first so "from <remote>/<base>" is up to date.
-                if let Err(e) = git::git_fetch(&project_path, &base_clone, Some(remote)) {
-                    log::warn!("Failed to fetch {remote}/{base_clone}: {e}");
-                }
-                format!("{remote}/{base_clone}")
-            } else if should_auto_pull {
-                log::trace!("Fetching base branch {base_clone} before worktree creation");
-                match git::git_fetch(&project_path, &base_clone, None) {
-                    Ok(_) => {
-                        log::trace!("Successfully fetched, using origin/{base_clone}");
-                        format!("origin/{base_clone}")
-                    }
-                    Err(e) => {
-                        // Prefer the remote-tracking tip over a stale local branch even
-                        // when the network fetch fails — local main/v4.x is often days
-                        // behind origin and would leave the new worktree missing commits.
-                        log::warn!("Failed to fetch base branch {base_clone}: {e}");
-                        if git::remote_branch_exists(&project_path, &base_clone) {
-                            format!("origin/{base_clone}")
-                        } else if has_local_branch {
-                            base_clone.clone()
-                        } else {
-                            format!("origin/{base_clone}")
-                        }
-                    }
-                }
-            } else if git::remote_branch_exists(&project_path, &base_clone) {
-                // auto_pull off: still prefer origin/<base> when we already have it
-                // so a stale local checkout of e.g. v4.x is not used as the start point.
-                format!("origin/{base_clone}")
-            } else if has_local_branch {
-                base_clone.clone()
-            } else {
-                format!("origin/{base_clone}")
-            };
+            let effective_base = resolve_start_point(
+                &project_path,
+                &base_clone,
+                base_remote_clone.as_deref(),
+                should_auto_pull,
+            );
 
             if should_auto_resolve_worktree_conflict(&worktree_origin_clone) {
                 let mut resolved = false;
@@ -4621,10 +4641,15 @@ pub async fn import_worktree(
 
     // Any project, including archived worktrees. Path comparison matches the
     // unmanaged list (canonical path, trailing separators).
+    // Pool worktrees are Jean-owned; never offer them for import.
     let tracked_paths: Vec<String> = data
         .worktrees
         .iter()
         .map(|worktree| worktree.path.clone())
+        .chain(super::worktree_pool::pool_paths_for_project(
+            &app,
+            &project_id,
+        ))
         .collect();
     if worktree_path_is_tracked(&path, &tracked_paths) {
         return Err(format!(
@@ -4729,10 +4754,15 @@ pub async fn list_unmanaged_worktrees(
     }
 
     let project_path = project.path.clone();
+    // Pool worktrees are Jean-owned; never offer them for import.
     let tracked_paths: Vec<String> = data
         .worktrees
         .iter()
         .map(|worktree| worktree.path.clone())
+        .chain(super::worktree_pool::pool_paths_for_project(
+            &app,
+            &project_id,
+        ))
         .collect();
 
     list_unmanaged_from_repo(&project_path, &tracked_paths)
@@ -5918,6 +5948,7 @@ pub async fn update_project_settings(
     linked_project_ids: Option<Vec<String>>,
     auto_fix_settings: Option<Option<ProjectAutoFixSettings>>,
     plan_queue_settings: Option<Option<crate::projects::types::ProjectPlanQueueSettings>>,
+    worktree_pool_settings: Option<Option<crate::projects::types::ProjectWorktreePoolSettings>>,
 ) -> Result<Project, String> {
     log::trace!("Updating settings for project: {project_id}");
 
@@ -6034,6 +6065,12 @@ pub async fn update_project_settings(
         project.plan_queue_settings = settings;
     }
 
+    let pool_settings_changed = worktree_pool_settings.is_some();
+    if let Some(settings) = worktree_pool_settings {
+        log::trace!("Updating worktree pool settings: {settings:?}");
+        project.worktree_pool_settings = settings.map(|s| s.normalize());
+    }
+
     // Handle linked_project_ids with bidirectional sync
     if let Some(ids) = linked_project_ids {
         // Filter out self-references and deduplicate
@@ -6083,6 +6120,10 @@ pub async fn update_project_settings(
         .ok_or_else(|| format!("Project not found after update: {project_id}"))?
         .clone();
     save_projects_data(&app, &data)?;
+
+    if pool_settings_changed {
+        super::worktree_pool::schedule_reconcile(&app, &project_id);
+    }
 
     log::trace!("Successfully updated project settings");
     Ok(updated_project)
@@ -13081,6 +13122,7 @@ pub async fn create_folder(
         linked_project_ids: Vec::new(),
         auto_fix_settings: None,
         plan_queue_settings: None,
+        worktree_pool_settings: None,
         server: None,
     };
 
@@ -15834,6 +15876,7 @@ mod tests {
             linked_project_ids: Vec::new(),
             auto_fix_settings: None,
             plan_queue_settings: None,
+            worktree_pool_settings: None,
             server: None,
         };
 
@@ -16019,6 +16062,7 @@ mod tests {
             linked_project_ids: Vec::new(),
             auto_fix_settings: None,
             plan_queue_settings: None,
+            worktree_pool_settings: None,
             server: None,
         };
         save_projects_data(

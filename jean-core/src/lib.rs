@@ -5983,6 +5983,7 @@ pub fn initialize_runtime(context: &RuntimeContext) -> Result<(), String> {
     projects::pr_autolink::start_pr_autolink_listener(context);
     auto_fix::scheduler::start_auto_fix_scheduler(context.clone());
     plan_queue::scheduler::start_plan_queue_scheduler(context.clone());
+    projects::worktree_pool::start_pool_maintainer(context.clone());
     // Agents keep working without clients: open their database and start the loop.
     match agents::init(context) {
         Ok(()) => agents::start(context.clone()),
