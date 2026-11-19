@@ -1,5 +1,6 @@
 import {
   Archive,
+  Bookmark,
   Code,
   FolderOpen,
   ListOrdered,
@@ -24,6 +25,9 @@ import {
   canOpenInTerminal,
 } from '@/lib/environment'
 import { getFileManagerName } from '@/lib/platform'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { isTauri } from '@/services/projects'
+import { shouldShowWorktreeLabelContextMenu } from '@/components/dashboard/worktree-label-context'
 import type { useWorktreeMenuActions } from './useWorktreeMenuActions'
 import { DeleteWorktreeDialog } from './DeleteWorktreeDialog'
 
@@ -32,14 +36,21 @@ interface WorktreeContextMenuProps {
   // run twice per worktree row.
   actions: ReturnType<typeof useWorktreeMenuActions>
   serverId?: string
+  /** Opens the worktree mark picker. Omit to hide "Marks…". */
+  onSetMarks?: () => void
   children: React.ReactNode
 }
 
 export function WorktreeContextMenu({
   actions,
   serverId,
+  onSetMarks,
   children,
 }: WorktreeContextMenuProps) {
+  const isMobile = useIsMobile()
+  const showMarks =
+    !!onSetMarks &&
+    shouldShowWorktreeLabelContextMenu({ isMobile, isNative: isTauri() })
   const {
     worktree,
     showDeleteConfirm,
@@ -92,6 +103,13 @@ export function WorktreeContextMenu({
           <ContextMenuItem onClick={handleOpenPlanQueue}>
             <ListOrdered className="mr-2 h-4 w-4" />
             Plan queue…
+          </ContextMenuItem>
+        )}
+
+        {showMarks && (
+          <ContextMenuItem onClick={onSetMarks}>
+            <Bookmark className="mr-2 h-4 w-4" />
+            Marks…
           </ContextMenuItem>
         )}
 

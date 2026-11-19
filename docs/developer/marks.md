@@ -104,6 +104,14 @@ message, or a finished run never clears it.
   the session read). Compact (mobile) rows show the icon and count only. The
   badge replaces the old per-session chips in the header; the worktree's own
   chips stay, and canvas search/sort still match session marks.
+- Sidebar worktree rows (`WorktreeItem`) show `WorktreeMarksCapsule`
+  (`src/components/dashboard/`) before the PR capsule: a pill with up to two
+  chips and `+n` (`SessionMarkChips` inside), all names in the tooltip.
+  `WorktreeList` reads the mark list once and passes it down. The row's context
+  menu has **Marks…** (same gate as the canvas: native app and mobile only),
+  which opens `LabelModal target="worktree"`. The canvas and the sidebar share
+  the picker state and save logic in `useWorktreeMarkPicker`
+  (`src/components/projects/`); the canvas adds the pin toggle itself.
 - The session context menu (`SessionContextMenuItems`, needs `worktreeId`) has
   one checkbox item per tracked definition of the session's server, at marks
   level 4 only. `toggleMark(labels, definition)` adds or removes that mark and
