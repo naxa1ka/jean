@@ -897,6 +897,8 @@ Background git status (`projects/git_status.rs`) fetches each remote branch at m
 
 PR status polling (`projects/pr_status.rs`) uses REST. It does not use `gh pr view`. REST has no `reviewDecision`, so Jean takes the result from each reviewer's latest review. Mr. Robot scans use the GraphQL reserve and pause.
 
+PR auto-link (`projects/pr_autolink.rs`): a PR that the agent creates itself (`gh pr create` in Bash) is linked by the backend. On each `chat:done` for a worktree that is not a base session and has no PR link, Jean runs branch detection (`detect_and_link_pr_for_worktree`). On a match it saves the link, emits `cache:invalidate` for `projects`, and refreshes the PR status. This works with no client open.
+
 ### Headless Mode
 
 The embedded Axum HTTP server enables running Jean without the native window:

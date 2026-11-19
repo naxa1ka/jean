@@ -18,7 +18,6 @@ import type { AppPreferences } from '@/types/preferences'
 const {
   mockInvoke,
   mockListen,
-  mockSaveWorktreePr,
   mockPlayNotificationSound,
   registeredListeners,
   mockNotifyIfBackground,
@@ -26,7 +25,6 @@ const {
 } = vi.hoisted(() => ({
   mockInvoke: vi.fn().mockResolvedValue(undefined),
   mockListen: vi.fn(),
-  mockSaveWorktreePr: vi.fn(),
   mockPlayNotificationSound: vi.fn(),
   registeredListeners: new Map<string, (event: { payload: unknown }) => void>(),
   mockNotifyIfBackground: vi.fn(),
@@ -54,7 +52,6 @@ vi.mock('@/lib/session-notifications', async () => {
 
 vi.mock('@/services/projects', () => ({
   isTauri: () => true,
-  saveWorktreePr: mockSaveWorktreePr,
   projectsQueryKeys: {
     all: ['projects'],
     list: () => ['projects'],

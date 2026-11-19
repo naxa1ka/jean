@@ -5965,6 +5965,7 @@ pub fn initialize_runtime(context: &RuntimeContext) -> Result<(), String> {
     task_manager.start();
     context.manage(task_manager);
     chat::auth_failure::start_auth_failure_listener(context);
+    projects::pr_autolink::start_pr_autolink_listener(context);
     auto_fix::scheduler::start_auto_fix_scheduler(context.clone());
     plan_queue::scheduler::start_plan_queue_scheduler(context.clone());
     // Agents keep working without clients: open their database and start the loop.
