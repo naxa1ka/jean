@@ -25,6 +25,9 @@ import { SidebarSessionContextMenu } from './SidebarSessionContextMenu'
 import { StatusGroupContextMenu } from './StatusGroupContextMenu'
 import { visibleWorktreeIds } from './sidebar-context-menu'
 import { middleClickClose } from '@/lib/middle-click'
+import { hasCloseConfirmBypassModifier } from '@/lib/confirm-bypass'
+import { usePreferences } from '@/services/preferences'
+import { LOCAL_SERVER_ID } from '@/types/server-resource'
 import {
   decideSessionClose,
   finishedSubSessionIds,
@@ -83,7 +86,11 @@ interface WorktreeSessionListProps {
   isNarrowSidebar: boolean
   onSessionSelect: (sessionId: string) => void
   /** Close a session, offering its finished sub-sessions too. */
-  onSessionRemove: (session: Session, finishedSubSessionIds: string[]) => void
+  onSessionRemove: (
+    session: Session,
+    finishedSubSessionIds: string[],
+    bypassConfirm?: boolean
+  ) => void
 }
 
 /**
@@ -124,8 +131,11 @@ const WorktreeSessionList = memo(function WorktreeSessionList({
     () => nestStatusGroups(groupCardsByStatus(cards), collapsedLeadSessionIds),
     [cards, collapsedLeadSessionIds]
   )
+  // Client-side modifier that skips the session close confirmation.
+  const { data: localPreferences } = usePreferences(LOCAL_SERVER_ID)
+  const closeBypassModifier = localPreferences?.close_confirm_bypass_modifier
   const removeSession = useCallback(
-    (session: Session) =>
+    (session: Session, bypassConfirm = false) =>
       onSessionRemove(
         session,
         finishedSubSessionIds(
@@ -133,7 +143,8 @@ const WorktreeSessionList = memo(function WorktreeSessionList({
           cards,
           card => card.session,
           card => !isSessionBusy(card.status)
-        )
+        ),
+        bypassConfirm
       ),
     [cards, onSessionRemove]
   )
@@ -311,7 +322,12 @@ const WorktreeSessionList = memo(function WorktreeSessionList({
                       }}
                       onPointerEnter={() => sessionHover.start(card.session.id)}
                       onPointerLeave={sessionHover.cancel}
-                      {...middleClickClose(() => removeSession(card.session))}
+                      {...middleClickClose(e =>
+                        removeSession(
+                          card.session,
+                          hasCloseConfirmBypassModifier(e, closeBypassModifier)
+                        )
+                      )}
                     >
                       <StatusIndicator
                         status={config.indicatorStatus}
@@ -770,14 +786,20 @@ export const WorktreeItem = memo(function WorktreeItem({
 
   // Middle-click or "Delete Session" on a conversation row, mirroring the
   // session tab: non-empty sessions confirm first, empty ones close at once.
+  // Holding the close bypass modifier closes at once (middle-click only).
   const handleSessionRemove = useCallback(
-    (session: Session, finishedSubSessionIds: string[]) => {
+    (
+      session: Session,
+      finishedSubSessionIds: string[],
+      bypassConfirm = false
+    ) => {
       const decision = decideSessionClose({
         target: session,
         sessions: sessionList ?? [session],
         inputDrafts: useChatStore.getState().inputDrafts,
         onLastSession: 'close-session',
         finishedSubSessionCount: finishedSubSessionIds.length,
+        bypassConfirm,
       })
       if (decision === 'close-session') handleDeleteSession(session.id)
       else if (decision === 'confirm-session') {

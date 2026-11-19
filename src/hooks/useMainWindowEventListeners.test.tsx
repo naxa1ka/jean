@@ -20,6 +20,7 @@ import {
   isAgentsViewActive,
   isChatComposerTarget,
   isPlainSessionTerminalFocused,
+  resolveShortcutWithBypass,
   shouldAllowKeybindingThroughOpenOverlay,
   shouldLetChatInputHandleAction,
   shouldLetPlanDialogHandleAction,
@@ -1264,6 +1265,51 @@ describe('removed keybindings', () => {
     expect(DEFAULT_KEYBINDINGS.clear_session_context).toBe('')
     expect(findKeybindingAction('mod+shift+k', DEFAULT_KEYBINDINGS)).toBeNull()
     expect(findKeybindingAction('', DEFAULT_KEYBINDINGS)).toBeNull()
+  })
+})
+
+describe('resolveShortcutWithBypass', () => {
+  it('resolves the close shortcut with the modifier held as a bypass', () => {
+    expect(
+      resolveShortcutWithBypass('mod+shift+w', DEFAULT_KEYBINDINGS, 'shift')
+    ).toEqual({
+      matchedAction: 'close_session_or_worktree',
+      bypassConfirm: true,
+    })
+  })
+
+  it('does not bypass the plain close shortcut', () => {
+    expect(
+      resolveShortcutWithBypass('mod+w', DEFAULT_KEYBINDINGS, 'shift')
+    ).toEqual({
+      matchedAction: 'close_session_or_worktree',
+      bypassConfirm: false,
+    })
+  })
+
+  it('lets a direct binding win over the bypass', () => {
+    expect(
+      resolveShortcutWithBypass(
+        'mod+shift+w',
+        { ...DEFAULT_KEYBINDINGS, new_worktree: 'mod+shift+w' },
+        'shift'
+      )
+    ).toEqual({ matchedAction: 'new_worktree', bypassConfirm: false })
+  })
+
+  it('ignores the modifier when the stripped shortcut is another action', () => {
+    expect(
+      resolveShortcutWithBypass('mod+shift+n', DEFAULT_KEYBINDINGS, 'shift')
+    ).toEqual({ matchedAction: null, bypassConfirm: false })
+  })
+
+  it('does nothing when the bypass is off', () => {
+    expect(
+      resolveShortcutWithBypass('mod+shift+w', DEFAULT_KEYBINDINGS, 'none')
+    ).toEqual({ matchedAction: null, bypassConfirm: false })
+    expect(
+      resolveShortcutWithBypass('mod+shift+w', DEFAULT_KEYBINDINGS, undefined)
+    ).toEqual({ matchedAction: null, bypassConfirm: false })
   })
 })
 

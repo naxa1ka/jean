@@ -30,7 +30,14 @@ import { toast } from 'sonner'
 import { useCommandContext } from './use-command-context'
 import { useLatestRef } from './useLatestRef'
 import { usePreferences, preferencesQueryKeys } from '@/services/preferences'
-import type { AppPreferences } from '@/types/preferences'
+import type {
+  AppPreferences,
+  CloseConfirmBypassModifier,
+} from '@/types/preferences'
+import {
+  stripShortcutModifier,
+  type CloseSessionOrWorktreeDetail,
+} from '@/lib/confirm-bypass'
 import { playWaitingSound } from '@/lib/sounds'
 import { logger } from '@/lib/logger'
 import {
@@ -175,6 +182,31 @@ export function findKeybindingAction(
   }
 
   return null
+}
+
+/**
+ * Resolve a shortcut to an action, honoring the close-confirmation bypass
+ * modifier. The held modifier serializes into a different shortcut string
+ * (e.g. `mod+shift+w` vs `mod+w`), so when the raw string matches nothing we
+ * strip the configured modifier and retry, but accept the retry ONLY for the
+ * close action, or a held modifier could shadow unrelated bindings.
+ */
+export function resolveShortcutWithBypass(
+  shortcut: string,
+  keybindings: KeybindingsMap,
+  bypassModifier: CloseConfirmBypassModifier | undefined
+): { matchedAction: KeybindingAction | null; bypassConfirm: boolean } {
+  const direct = findKeybindingAction(shortcut, keybindings)
+  if (direct) return { matchedAction: direct, bypassConfirm: false }
+
+  const stripped = stripShortcutModifier(shortcut, bypassModifier)
+  const candidate = stripped
+    ? findKeybindingAction(stripped, keybindings)
+    : null
+  if (candidate === 'close_session_or_worktree') {
+    return { matchedAction: candidate, bypassConfirm: true }
+  }
+  return { matchedAction: null, bypassConfirm: false }
 }
 
 /**
@@ -606,7 +638,8 @@ export function toggleBrowserKeybinding(): void {
 function executeKeybindingAction(
   action: KeybindingAction,
   commandContext: ReturnType<typeof useCommandContext>,
-  queryClient: QueryClient
+  queryClient: QueryClient,
+  bypassConfirm = false
 ) {
   // Canvas-only actions: blocked when the session chat modal is open
   const CANVAS_ONLY_ACTIONS = new Set<KeybindingAction>(['focus_canvas_search'])
@@ -834,7 +867,12 @@ function executeKeybindingAction(
       if (closeActiveTerminalTabForShortcut()) break
       // Default: close session/worktree
       logger.debug('Keybinding: close_session_or_worktree')
-      window.dispatchEvent(new CustomEvent('close-session-or-worktree'))
+      window.dispatchEvent(
+        new CustomEvent<CloseSessionOrWorktreeDetail>(
+          'close-session-or-worktree',
+          { detail: { bypassConfirm } }
+        )
+      )
       break
     }
     case 'new_worktree':
@@ -1031,6 +1069,14 @@ export function useMainWindowEventListeners() {
     }
   }, [preferences?.keybindings])
 
+  // Modifier that, held with the close shortcut, skips the session confirmation.
+  const bypassModifierRef = useRef<CloseConfirmBypassModifier | undefined>(
+    undefined
+  )
+  useEffect(() => {
+    bypassModifierRef.current = preferences?.close_confirm_bypass_modifier
+  }, [preferences?.close_confirm_bypass_modifier])
+
   // After alt-tab / OS window reactivation, WebViews often leave the document
   // without keyboard focus until a click. Restore the last focused element
   // (or chat input / body) so typing and shortcuts like Ctrl/Cmd+L work again.
@@ -1067,7 +1113,11 @@ export function useMainWindowEventListeners() {
       if (isPlainSessionTerminalFocused()) return
 
       const keybindings = keybindingsRef.current
-      const matchedAction = findKeybindingAction(shortcut, keybindings)
+      const { matchedAction, bypassConfirm } = resolveShortcutWithBypass(
+        shortcut,
+        keybindings,
+        bypassModifierRef.current
+      )
 
       if (
         matchedAction &&
@@ -1170,7 +1220,9 @@ export function useMainWindowEventListeners() {
             addTerminalTabForShortcut()
             return
           }
-          if (shortcut === kb.close_session_or_worktree) {
+          // Compare the resolved action, not the raw string: with the bypass
+          // modifier held the string is e.g. `mod+shift+w`.
+          if (matchedAction === 'close_session_or_worktree') {
             e.preventDefault()
             e.stopPropagation()
             closeActiveTerminalTabForShortcut()
@@ -1290,7 +1342,12 @@ export function useMainWindowEventListeners() {
         }
         e.preventDefault()
         e.stopPropagation()
-        executeKeybindingAction(action, commandContextRef.current, queryClient)
+        executeKeybindingAction(
+          action,
+          commandContextRef.current,
+          queryClient,
+          bypassConfirm
+        )
         return
       }
     }

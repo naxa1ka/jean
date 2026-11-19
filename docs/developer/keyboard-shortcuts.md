@@ -401,10 +401,29 @@ fn default_keybindings() -> std::collections::HashMap<String, String> {
 
 Closing a worktree, or a session that has messages or an unsent draft, always
 shows `CloseWorktreeDialog` first. This applies to Cmd/Ctrl+W, the tab X button,
-middle-clicks, and the session menu. No preference or held modifier skips the
-dialog. Empty sessions close at once. Every surface asks `decideSessionClose`
-in `src/components/chat/session-lifecycle.ts`, which also owns active-session
-selection and the neighbor picked after a tab closes.
+middle-clicks, and the session menu. Empty sessions close at once. Every
+surface asks `decideSessionClose` in `src/components/chat/session-lifecycle.ts`,
+which also owns active-session selection and the neighbor picked after a tab
+closes.
+
+### Bypass modifier (sessions only)
+
+The client-only preference `close_confirm_bypass_modifier` (`shift`, `alt`, or
+`none`, default `none`; Settings → General → Chat) skips the **session**
+confirmation when held:
+
+- Surfaces: tab X button, tab middle-click, sidebar session-row middle-click,
+  and the close shortcut (Cmd/Ctrl+W).
+- `decideSessionClose({ bypassConfirm })` turns `confirm-session` into
+  `close-session`. A lead session closes alone; its finished sub-sessions stay
+  open. `confirm-worktree` never bypasses, because worktree delete is permanent.
+- The held modifier changes the shortcut string (`mod+shift+w`).
+  `resolveShortcutWithBypass()` in `useMainWindowEventListeners.ts` retries with
+  the modifier stripped, and accepts the retry only for
+  `close_session_or_worktree`. A direct binding always wins. The shortcut
+  dispatches `close-session-or-worktree` with `detail.bypassConfirm`.
+- Helpers live in `src/lib/confirm-bypass.ts`. The dialog hint is shown on
+  native desktop only.
 
 ## Shift+Enter in the embedded terminal
 

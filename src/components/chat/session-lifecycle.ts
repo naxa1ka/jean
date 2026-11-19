@@ -342,7 +342,10 @@ export type SessionCloseDecision =
  * tabs close it (the backend then creates an empty one), Recent rows ask to
  * delete the worktree. Otherwise empty sessions close at once and the rest
  * confirm first. A lead with finished sub-sessions always confirms, so the
- * dialog can offer to close them too.
+ * dialog can offer to close them too. `bypassConfirm` (the user held the close
+ * bypass modifier) turns `confirm-session` into `close-session`: the lead then
+ * closes alone and its finished sub-sessions stay open. `confirm-worktree`
+ * never bypasses, because deleting a worktree is permanent.
  */
 export function decideSessionClose({
   target,
@@ -351,6 +354,7 @@ export function decideSessionClose({
   onLastSession,
   keepWorktree = false,
   finishedSubSessionCount = 0,
+  bypassConfirm = false,
 }: {
   target: {
     id: string
@@ -362,6 +366,7 @@ export function decideSessionClose({
   onLastSession: 'close-session' | 'confirm-worktree'
   keepWorktree?: boolean
   finishedSubSessionCount?: number
+  bypassConfirm?: boolean
 }): SessionCloseDecision {
   if (target?.archived_at) return 'noop'
   const open = openSessions(sessions)
@@ -371,6 +376,7 @@ export function decideSessionClose({
   if (isLast && onLastSession === 'confirm-worktree' && !keepWorktree) {
     return 'confirm-worktree'
   }
+  if (bypassConfirm) return 'close-session'
   return isSessionEmpty(target, inputDrafts) && finishedSubSessionCount === 0
     ? 'close-session'
     : 'confirm-session'

@@ -69,6 +69,10 @@ import { SessionMarkChips } from './SessionMarkChips'
 import { useMarkDefinitions } from '@/lib/marks'
 import { getResourceServerId } from '@/lib/marks-level'
 import { isNativeApp } from '@/lib/environment'
+import {
+  hasCloseConfirmBypassModifier,
+  readCloseBypassDetail,
+} from '@/lib/confirm-bypass'
 import { isImeComposingEvent } from '@/lib/ime-composition'
 import { toast } from 'sonner'
 import { ChatWindow } from './ChatWindow'
@@ -709,9 +713,14 @@ export const SessionChatModal = memo(function SessionChatModal({
     ]
   )
 
+  // Client-side modifier that skips the session close confirmation.
+  const { data: closeBypassPreferences } = usePreferences(LOCAL_SERVER_ID)
+  const closeBypassModifier =
+    closeBypassPreferences?.close_confirm_bypass_modifier
+
   // Delete a session tab, asking for confirmation first when it has content.
   const removeSessionTab = useCallback(
-    (session: Session) => {
+    (session: Session, { bypassConfirm = false } = {}) => {
       const subSessionIds = finishedSubSessionsOf(session.id)
       const decision = decideSessionClose({
         target: session,
@@ -720,6 +729,7 @@ export const SessionChatModal = memo(function SessionChatModal({
         onLastSession: 'close-session',
         keepWorktree: isServer || isBase,
         finishedSubSessionCount: subSessionIds.length,
+        bypassConfirm,
       })
       applyCloseDecision(decision, session.id, subSessionIds)
     },
@@ -731,9 +741,11 @@ export const SessionChatModal = memo(function SessionChatModal({
       if (e.button !== 1) return
       e.preventDefault()
       e.stopPropagation()
-      removeSessionTab(session)
+      removeSessionTab(session, {
+        bypassConfirm: hasCloseConfirmBypassModifier(e, closeBypassModifier),
+      })
     },
-    [removeSessionTab]
+    [removeSessionTab, closeBypassModifier]
   )
 
   useEffect(() => {
@@ -755,6 +767,7 @@ export const SessionChatModal = memo(function SessionChatModal({
         onLastSession: 'close-session',
         keepWorktree: isServer || isBase,
         finishedSubSessionCount: subSessionIds.length,
+        bypassConfirm: readCloseBypassDetail(e),
       })
       applyCloseDecision(decision, currentSessionId, subSessionIds)
     }
@@ -1568,7 +1581,13 @@ export const SessionChatModal = memo(function SessionChatModal({
                                 tooltip={'Remove session'}
                                 onClick={e => {
                                   e.stopPropagation()
-                                  removeSessionTab(session)
+                                  removeSessionTab(session, {
+                                    bypassConfirm:
+                                      hasCloseConfirmBypassModifier(
+                                        e,
+                                        closeBypassModifier
+                                      ),
+                                  })
                                 }}
                                 className="ml-0.5 opacity-60 sm:opacity-0 sm:group-hover/tab:opacity-60 hover:!opacity-100"
                                 size="xs"
