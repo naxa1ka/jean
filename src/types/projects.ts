@@ -415,6 +415,17 @@ export interface WorktreeCreateErrorEvent {
 // Worktree Deletion Events (from Rust backend)
 // =============================================================================
 
+/** Event payload when a worktree is archived */
+export interface WorktreeArchivedEvent {
+  id: string
+  project_id: string
+}
+
+/** Event payload when a worktree is restored from the archive */
+export interface WorktreeUnarchivedEvent {
+  worktree: Worktree
+}
+
 /** Event payload when worktree deletion starts */
 export interface WorktreeDeletingEvent {
   id: string

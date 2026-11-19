@@ -572,6 +572,7 @@ describe('preferences service', () => {
         fast_mode_models: [],
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -733,6 +734,7 @@ describe('preferences service', () => {
         fast_mode_models: [],
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -915,6 +917,7 @@ describe('preferences service', () => {
         fast_mode_models: [],
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -1046,6 +1049,7 @@ describe('preferences service', () => {
         fast_mode_models: [],
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -1178,6 +1182,7 @@ describe('preferences service', () => {
         fast_mode_models: [],
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -1352,6 +1357,7 @@ describe('preferences service', () => {
         fast_mode_models: [],
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
@@ -1482,6 +1488,7 @@ describe('preferences service', () => {
         fast_mode_models: [],
 
         auto_pull_base_branch: true,
+        archive_retention_days: 7,
         default_execution_mode: 'plan',
         default_backend: 'claude',
         default_new_session_kind: 'chat',
