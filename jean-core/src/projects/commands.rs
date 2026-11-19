@@ -1100,6 +1100,9 @@ pub async fn remove_project(app: AppHandle, project_id: String) -> Result<(), St
 
     save_projects_data(&app, &data)?;
 
+    // Its pool checkouts are no longer needed: reconcile removes them.
+    super::worktree_pool::schedule_reconcile(&app, &project_id);
+
     // Clean up session data and sessions files of the dropped worktrees
     for worktree in &dropped_worktrees {
         let worktree_id = &worktree.id;
@@ -2357,7 +2360,7 @@ pub async fn create_worktree(
 
             // Create the git worktree (this is the slow operation), or reset and
             // rename a pooled one.
-            let create_result = match &pooled {
+            let mut create_result = match &pooled {
                 Some(entry) => {
                     worktree_pool::prepare_taken(entry, &name_clone, &effective_base).map(Some)
                 }
@@ -2369,13 +2372,42 @@ pub async fn create_worktree(
                 )
                 .map(|_| None),
             };
+            // A pooled worktree that cannot be prepared (for example its folder was
+            // deleted outside Jean) is removed; create a fresh one instead.
+            let prepare_error = create_result
+                .as_ref()
+                .err()
+                .cloned()
+                .filter(|_| pooled.is_some());
+            if let Some(e) = prepare_error {
+                if let Some(entry) = pooled.take() {
+                    log::warn!(
+                        "Background: Pooled worktree {} unusable, creating a fresh one: {e}",
+                        entry.path
+                    );
+                    worktree_pool::discard_now(&app_clone, entry);
+                }
+                create_result = match project_worktrees_dir_clone
+                    .join(sanitize_folder_name(&name_clone))
+                    .to_str()
+                {
+                    Some(path) => {
+                        worktree_path_clone = path.to_string();
+                        git::create_worktree(
+                            &project_path,
+                            &worktree_path_clone,
+                            &branch_for_worktree,
+                            &effective_base,
+                        )
+                        .map(|_| None)
+                    }
+                    None => Err("Invalid worktree path".to_string()),
+                };
+            }
             let pooled_branch = match create_result {
                 Ok(branch) => branch,
                 Err(e) => {
                     log::error!("Background: Failed to create worktree: {e}");
-                    if let Some(entry) = pooled.take() {
-                        worktree_pool::discard(&app_clone, entry);
-                    }
                     let error_event = WorktreeCreateErrorEvent {
                         id: worktree_id_clone,
                         project_id: project_id_clone,
@@ -2473,7 +2505,15 @@ pub async fn create_worktree(
                     }
                 }
             } else {
-                pooled_branch.unwrap_or(actual_branch_name)
+                match pooled_branch {
+                    // `rename_branch` may add a suffix; keep the worktree name equal
+                    // to its branch, like the non-pool auto-fix path does.
+                    Some(branch) => {
+                        name_clone = branch.clone();
+                        branch
+                    }
+                    None => actual_branch_name,
+                }
             };
 
             // Remember fork remotes added by `gh pr checkout` so clearing/deleting
@@ -2765,13 +2805,19 @@ pub async fn create_worktree(
             let scripts = git::resolve_jean_config(&worktree_path_clone, Some(&project_path))
                 .map(|config| config.scripts)
                 .unwrap_or_default();
-            let pending_setup_script = if pooled.is_some() {
+            // Pooled without a claim script: keep the setup results of the pool, but only
+            // when `scripts.setup` did not change since the pool ran it.
+            let pool_setup = pooled
+                .as_ref()
+                .filter(|e| scripts.claim.is_none() && e.setup_script == scripts.setup);
+            let runs_claim = pooled.is_some() && scripts.claim.is_some();
+            let pending_setup_script = if runs_claim {
                 scripts.claim
+            } else if pooled.is_some() && pool_setup.is_some() {
+                None
             } else {
                 scripts.setup
             };
-            // Pooled without a claim script: keep the setup results of the pool.
-            let pool_setup = pooled.as_ref().filter(|_| pending_setup_script.is_none());
 
             // Save to storage and emit worktree:created BEFORE running setup script
             // so the UI can open immediately and the user can start typing.
@@ -2844,6 +2890,9 @@ pub async fn create_worktree(
                 data.add_worktree(worktree.clone());
                 if let Err(e) = save_projects_data(&app_clone, &data) {
                     log::error!("Background: Failed to save worktree data: {e}");
+                    if let Some(entry) = pooled.take() {
+                        worktree_pool::discard(&app_clone, entry);
+                    }
                     let error_event = WorktreeCreateErrorEvent {
                         id: worktree_id_clone,
                         project_id: project_id_clone,
@@ -2853,6 +2902,11 @@ pub async fn create_worktree(
                         log::error!("Failed to emit worktree:error event: {emit_err}");
                     }
                     return;
+                }
+
+                // The worktree is registered: the pool no longer tracks it.
+                if let Some(entry) = &pooled {
+                    worktree_pool::forget(&app_clone, entry);
                 }
 
                 // Emit success event — UI opens immediately
@@ -2889,6 +2943,9 @@ pub async fn create_worktree(
                 }
             } else {
                 log::error!("Background: Failed to load projects data for saving");
+                if let Some(entry) = pooled.take() {
+                    worktree_pool::discard(&app_clone, entry);
+                }
                 let error_event = WorktreeCreateErrorEvent {
                     id: worktree_id_clone,
                     project_id: project_id_clone,
@@ -2903,7 +2960,7 @@ pub async fn create_worktree(
             // Run setup script AFTER emitting worktree:created (user can already type)
             if let Some(script) = pending_setup_script {
                 log::trace!("Background: Found jean.json with setup script, executing...");
-                let run_script = if pooled.is_some() {
+                let run_script = if runs_claim {
                     git::run_claim_script
                 } else {
                     git::run_setup_script
@@ -6085,6 +6142,8 @@ pub async fn update_project_settings(
         project.default_backend = backend.filter(|b| b != "__none__");
     }
 
+    // A new worktrees dir makes the pool's checkouts stale: reconcile replaces them.
+    let worktrees_dir_changed = worktrees_dir.is_some();
     if let Some(dir) = worktrees_dir {
         let dir = dir.trim().to_string();
         log::trace!("Updating worktrees dir: {dir:?}");
@@ -6141,7 +6200,7 @@ pub async fn update_project_settings(
         project.plan_queue_settings = settings;
     }
 
-    let pool_settings_changed = worktree_pool_settings.is_some();
+    let pool_settings_changed = worktree_pool_settings.is_some() || worktrees_dir_changed;
     if let Some(settings) = worktree_pool_settings {
         log::trace!("Updating worktree pool settings: {settings:?}");
         project.worktree_pool_settings = settings.map(|s| s.normalize());

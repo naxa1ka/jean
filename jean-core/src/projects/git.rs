@@ -1951,6 +1951,15 @@ fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Prune worktree entries whose folders were deleted outside the app
+pub fn prune_worktrees(repo_path: &str) -> Result<(), String> {
+    wsl_aware_command("git", Some(Path::new(repo_path)))
+        .args(["worktree", "prune"])
+        .output()
+        .map_err(|e| format!("Failed to run git worktree prune: {e}"))
+        .map(|_| ())
+}
+
 /// Remove a git worktree
 ///
 /// # Arguments

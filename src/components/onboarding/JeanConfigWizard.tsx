@@ -86,6 +86,8 @@ function JeanConfigWizardContent() {
         // Preserve any pre-existing fields (e.g. provider binding).
         ...existingConfig,
         scripts: {
+          // Keep scripts the wizard does not edit (e.g. claim).
+          ...existingConfig?.scripts,
           setup: setupScript.trim() || null,
           teardown: teardownScript.trim() || null,
           run,

@@ -27,10 +27,19 @@ const MAINTAINER_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// Serializes read-modify-write of `worktree_pool.json`.
 static POOL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-/// Project id -> worktrees in creation. A key is present while a reconcile runs.
-static FILLING: Lazy<Mutex<HashMap<String, u32>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+/// State of a running reconcile.
+#[derive(Debug, Default)]
+struct FillState {
+    /// Worktrees still to create.
+    count: u32,
+    /// Another reconcile was asked for while this one runs.
+    dirty: bool,
+}
 
-/// One ready worktree that no session uses yet.
+/// Project id -> state. A key is present while a reconcile runs.
+static FILLING: Lazy<Mutex<HashMap<String, FillState>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// One worktree of the pool. It is idle (ready to take) unless `busy` is set.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PoolEntry {
     pub id: String,
@@ -47,6 +56,11 @@ pub struct PoolEntry {
     pub setup_output: Option<String>,
     #[serde(default)]
     pub setup_success: Option<bool>,
+    /// Not idle: being set up, claimed by a new worktree, or being removed. The entry
+    /// stays in the file until that ends, so a crash leaves a trace that
+    /// `cleanup_stale_entries` finds at the next start.
+    #[serde(default)]
+    pub busy: bool,
 }
 
 /// Contents of `<app_data>/worktree_pool.json`.
@@ -120,11 +134,57 @@ fn read_pool(app: &AppHandle) -> Result<WorktreePoolData, String> {
     load_pool(&pool_path(app)?)
 }
 
-/// Drop entries whose folder no longer exists (deleted outside Jean).
+/// Drop entries whose folder no longer exists (deleted outside Jean), with their branch.
 pub fn drop_missing_entries(app: &AppHandle) -> Result<(), String> {
-    with_pool_mut(app, |data| {
-        data.entries.retain(|entry| Path::new(&entry.path).exists());
-    })
+    let dropped = with_pool_mut(app, |data| {
+        let (kept, dropped): (Vec<PoolEntry>, Vec<PoolEntry>) = std::mem::take(&mut data.entries)
+            .into_iter()
+            .partition(|entry| Path::new(&entry.path).exists());
+        data.entries = kept;
+        dropped
+    })?;
+    for entry in dropped {
+        // Git refuses to delete the branch of a registered worktree, so prune first.
+        let _ = git::prune_worktrees(&entry.project_path);
+        if let Err(e) = git::delete_branch(&entry.project_path, &entry.branch) {
+            log::warn!(
+                "Worktree pool: failed to delete branch {}: {e}",
+                entry.branch
+            );
+        }
+    }
+    Ok(())
+}
+
+/// At start, finish what a crash interrupted: remove busy entries and their checkouts.
+/// An entry whose folder is already a registered worktree was claimed and saved; it is
+/// only forgotten. Call it before the first reconcile, when no claim or fill can run.
+pub fn cleanup_stale_entries(app: &AppHandle) {
+    let stale: Vec<PoolEntry> = match read_pool(app) {
+        Ok(data) => data.entries.into_iter().filter(|e| e.busy).collect(),
+        Err(e) => {
+            log::warn!("Worktree pool: {e}");
+            return;
+        }
+    };
+    if stale.is_empty() {
+        return;
+    }
+    let registered: HashSet<String> = match load_projects_data(app) {
+        Ok(data) => data.worktrees.into_iter().map(|w| w.path).collect(),
+        Err(e) => {
+            // Without the list we cannot tell a claimed worktree from an orphan.
+            log::warn!("Worktree pool: stale cleanup skipped: {e}");
+            return;
+        }
+    };
+    for entry in stale {
+        if registered.contains(&entry.path) {
+            forget(app, &entry);
+        } else {
+            retire(app, &entry, false);
+        }
+    }
 }
 
 /// Paths of the pool worktrees of one project.
@@ -143,31 +203,63 @@ pub fn pool_paths_for_project(app: &AppHandle, project_id: &str) -> Vec<String> 
     }
 }
 
-/// Marks a reconcile as running for a project; clears the mark on drop.
+/// Marks a reconcile as running for a project; clears the mark when done or on drop.
 struct FillGuard {
     project_id: String,
+    released: bool,
 }
 
 impl FillGuard {
+    /// `None` when a reconcile already runs; that one is told to run again.
     fn acquire(project_id: &str) -> Option<Self> {
         let mut filling = FILLING.lock().unwrap_or_else(|e| e.into_inner());
-        if filling.contains_key(project_id) {
+        if let Some(state) = filling.get_mut(project_id) {
+            state.dirty = true;
             return None;
         }
-        filling.insert(project_id.to_string(), 0);
+        filling.insert(project_id.to_string(), FillState::default());
         Some(Self {
             project_id: project_id.to_string(),
+            released: false,
         })
     }
 
     fn set_filling(&self, count: u32) {
         let mut filling = FILLING.lock().unwrap_or_else(|e| e.into_inner());
-        filling.insert(self.project_id.clone(), count);
+        if let Some(state) = filling.get_mut(&self.project_id) {
+            state.count = count;
+        }
+    }
+
+    /// A reconcile was asked for while this one ran: its settings may be out of date.
+    fn is_dirty(&self) -> bool {
+        let filling = FILLING.lock().unwrap_or_else(|e| e.into_inner());
+        filling.get(&self.project_id).is_some_and(|s| s.dirty)
+    }
+
+    /// `true`: a request came in during the run, so run again. `false`: the mark is
+    /// cleared. One lock covers both, so a request cannot slip in between.
+    fn finish_or_rerun(&mut self) -> bool {
+        let mut filling = FILLING.lock().unwrap_or_else(|e| e.into_inner());
+        match filling.get_mut(&self.project_id) {
+            Some(state) if state.dirty => {
+                *state = FillState::default();
+                true
+            }
+            _ => {
+                filling.remove(&self.project_id);
+                self.released = true;
+                false
+            }
+        }
     }
 }
 
 impl Drop for FillGuard {
     fn drop(&mut self) {
+        if self.released {
+            return;
+        }
         let mut filling = FILLING.lock().unwrap_or_else(|e| e.into_inner());
         filling.remove(&self.project_id);
     }
@@ -175,7 +267,7 @@ impl Drop for FillGuard {
 
 fn filling_count(project_id: &str) -> u32 {
     let filling = FILLING.lock().unwrap_or_else(|e| e.into_inner());
-    filling.get(project_id).copied().unwrap_or(0)
+    filling.get(project_id).map_or(0, |s| s.count)
 }
 
 /// Reconcile one project's pool in a background thread.
@@ -187,9 +279,12 @@ pub fn schedule_reconcile(app: &AppHandle, project_id: &str) {
 
 /// Reconcile every project now, then every 10 minutes.
 pub fn start_pool_maintainer(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        reconcile_all(&app);
-        std::thread::sleep(MAINTAINER_INTERVAL);
+    std::thread::spawn(move || {
+        cleanup_stale_entries(&app);
+        loop {
+            reconcile_all(&app);
+            std::thread::sleep(MAINTAINER_INTERVAL);
+        }
     });
 }
 
@@ -220,34 +315,50 @@ fn reconcile_all(app: &AppHandle) {
 }
 
 fn reconcile_project(app: &AppHandle, project_id: &str) {
-    let Some(guard) = FillGuard::acquire(project_id) else {
+    let Some(mut guard) = FillGuard::acquire(project_id) else {
         return;
     };
-    if let Err(e) = reconcile_inner(app, project_id, &guard) {
-        log::warn!("Worktree pool: reconcile of project {project_id} failed: {e}");
+    loop {
+        if let Err(e) = reconcile_inner(app, project_id, &guard) {
+            log::warn!("Worktree pool: reconcile of project {project_id} failed: {e}");
+        }
+        if !guard.finish_or_rerun() {
+            break;
+        }
     }
 }
 
+/// Mark the oldest `count` idle entries of a project busy (all when `None`) and return
+/// them. The caller ends each one with `forget` (done), `release` (put back) or
+/// `retire` (remove the checkout).
 fn take_entries(
     app: &AppHandle,
     project_id: &str,
     count: Option<usize>,
+    matches: &dyn Fn(&PoolEntry) -> bool,
 ) -> Result<Vec<PoolEntry>, String> {
     with_pool_mut(app, |data| {
-        let mut mine: Vec<PoolEntry> = data
+        let mut idle: Vec<&mut PoolEntry> = data
             .entries
-            .iter()
-            .filter(|e| e.project_id == project_id)
-            .cloned()
+            .iter_mut()
+            .filter(|e| e.project_id == project_id && !e.busy && matches(e))
             .collect();
-        mine.sort_by_key(|e| e.created_at);
+        idle.sort_by_key(|e| e.created_at);
         if let Some(count) = count {
-            mine.truncate(count);
+            idle.truncate(count);
         }
-        let ids: HashSet<&str> = mine.iter().map(|e| e.id.as_str()).collect();
-        data.entries.retain(|e| !ids.contains(e.id.as_str()));
-        mine
+        idle.into_iter()
+            .map(|e| {
+                e.busy = true;
+                e.clone()
+            })
+            .collect()
     })
+}
+
+/// An entry is usable when its folder is directly in the project's worktrees dir.
+fn in_worktrees_dir(entry: &PoolEntry, dir: &Path) -> bool {
+    Path::new(&entry.path).parent() == Some(dir)
 }
 
 /// Creates without a PR context use the pool. PR worktrees need `gh pr checkout`.
@@ -264,17 +375,40 @@ pub fn take(app: &AppHandle, project: &Project) -> Option<PoolEntry> {
     if !enabled {
         return None;
     }
-    match take_entries(app, &project.id, Some(1)) {
-        Ok(mut entries) => entries.pop(),
-        Err(e) => {
-            log::warn!("Worktree pool: take failed for {}: {e}", project.id);
-            None
+    let dir = get_project_worktrees_dir(&project.name, project.worktrees_dir.as_deref()).ok()?;
+    loop {
+        let entry = match take_entries(app, &project.id, Some(1), &|_| true) {
+            Ok(mut entries) => entries.pop()?,
+            Err(e) => {
+                log::warn!("Worktree pool: take failed for {}: {e}", project.id);
+                return None;
+            }
+        };
+        if in_worktrees_dir(&entry, &dir) {
+            return Some(entry);
         }
+        // Made for an earlier worktrees dir. Each pass marks one more entry busy.
+        discard(app, entry);
+    }
+}
+
+/// The worktree of a taken entry is registered: the pool does not track it any more.
+pub fn forget(app: &AppHandle, entry: &PoolEntry) {
+    if let Err(e) = with_pool_mut(app, |data| data.entries.retain(|e| e.id != entry.id)) {
+        log::warn!("Worktree pool: failed to forget {}: {e}", entry.path);
     }
 }
 
 fn put_back(app: &AppHandle, entry: PoolEntry) -> Result<(), String> {
-    with_pool_mut(app, |data| data.entries.push(entry))
+    with_pool_mut(app, |data| {
+        match data.entries.iter().position(|e| e.id == entry.id) {
+            Some(i) => data.entries[i].busy = false,
+            None => data.entries.push(PoolEntry {
+                busy: false,
+                ..entry
+            }),
+        }
+    })
 }
 
 /// Put a taken, unchanged worktree back into the pool.
@@ -286,13 +420,16 @@ pub fn release(app: &AppHandle, entry: PoolEntry) {
     schedule_reconcile(app, &project_id);
 }
 
-/// Remove a taken worktree that could not be prepared (background thread).
+/// Remove a taken worktree that could not be prepared, then refill.
+pub fn discard_now(app: &AppHandle, entry: PoolEntry) {
+    retire(app, &entry, true);
+    schedule_reconcile(app, &entry.project_id);
+}
+
+/// `discard_now` in a background thread.
 pub fn discard(app: &AppHandle, entry: PoolEntry) {
     let app = app.clone();
-    std::thread::spawn(move || {
-        remove_entry_checkout(&entry, true);
-        reconcile_project(&app, &entry.project_id);
-    });
+    std::thread::spawn(move || discard_now(&app, entry));
 }
 
 /// Reset a taken worktree to `start_point` and rename its branch to `name`.
@@ -303,6 +440,12 @@ pub fn prepare_taken(entry: &PoolEntry, name: &str, start_point: &str) -> Result
         return Ok(entry.branch.clone());
     }
     git::rename_branch(&entry.path, name)
+}
+
+/// Remove the checkout and branch of an entry, then drop it from the file.
+fn retire(app: &AppHandle, entry: &PoolEntry, run_teardown: bool) {
+    remove_entry_checkout(entry, run_teardown);
+    forget(app, entry);
 }
 
 fn remove_entry_checkout(entry: &PoolEntry, run_teardown: bool) {
@@ -338,8 +481,13 @@ fn reconcile_inner(app: &AppHandle, project_id: &str, guard: &FillGuard) -> Resu
         .cloned()
     else {
         // Project was removed: its checkouts go too, without teardown.
-        for entry in take_entries(app, project_id, None)? {
-            remove_entry_checkout(&entry, false);
+        let entries: Vec<PoolEntry> = read_pool(app)?
+            .entries
+            .into_iter()
+            .filter(|e| e.project_id == project_id)
+            .collect();
+        for entry in entries {
+            retire(app, &entry, false);
         }
         return Ok(());
     };
@@ -349,17 +497,29 @@ fn reconcile_inner(app: &AppHandle, project_id: &str, guard: &FillGuard) -> Resu
         .clone()
         .unwrap_or_default()
         .normalize();
-    let idle = read_pool(app)?
-        .entries
-        .iter()
-        .filter(|e| e.project_id == project_id)
-        .count() as u32;
+    let count_idle = || -> Result<u32, String> {
+        Ok(read_pool(app)?
+            .entries
+            .iter()
+            .filter(|e| e.project_id == project_id && !e.busy)
+            .count() as u32)
+    };
 
+    // Entries made for an earlier worktrees dir are replaced. The dir is only looked up
+    // when there is something to check: looking it up creates the folder.
+    if count_idle()? > 0 {
+        let dir = get_project_worktrees_dir(&project.name, project.worktrees_dir.as_deref())?;
+        for entry in take_entries(app, project_id, None, &|e| !in_worktrees_dir(e, &dir))? {
+            retire(app, &entry, true);
+        }
+    }
+
+    let idle = count_idle()?;
     let trim = trim_needed(idle, &settings);
     if trim > 0 {
-        // Remove from the file first, so nobody takes an entry that is being deleted.
-        for entry in take_entries(app, project_id, Some(trim as usize))? {
-            remove_entry_checkout(&entry, true);
+        // Marked busy first, so nobody takes an entry that is being deleted.
+        for entry in take_entries(app, project_id, Some(trim as usize), &|_| true)? {
+            retire(app, &entry, true);
         }
         return Ok(());
     }
@@ -372,15 +532,15 @@ fn reconcile_inner(app: &AppHandle, project_id: &str, guard: &FillGuard) -> Resu
         .map(|prefs| prefs.auto_pull_base_branch)
         .unwrap_or(false);
     for done in 0..refill {
+        // A new request came in: the settings may have changed. The caller runs again
+        // with fresh settings.
+        if guard.is_dirty() {
+            break;
+        }
         guard.set_filling(refill - done);
-        match create_entry(app, &project, auto_pull) {
-            Ok(entry) => {
-                with_pool_mut(app, |pool| pool.entries.push(entry))?;
-            }
-            Err(e) => {
-                log::warn!("Worktree pool: failed to create worktree for {project_id}: {e}");
-                break;
-            }
+        if let Err(e) = create_entry(app, &project, auto_pull) {
+            log::warn!("Worktree pool: failed to create worktree for {project_id}: {e}");
+            break;
         }
     }
     Ok(())
@@ -393,8 +553,9 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// Create one checkout from the project's default branch and run its setup script.
-fn create_entry(app: &AppHandle, project: &Project, auto_pull: bool) -> Result<PoolEntry, String> {
+/// Create one checkout from the project's default branch, run its setup script, and
+/// add it to the pool as idle.
+fn create_entry(app: &AppHandle, project: &Project, auto_pull: bool) -> Result<(), String> {
     let base = git::get_valid_base_branch(&project.path, &project.default_branch)?;
     let worktrees_dir = get_project_worktrees_dir(&project.name, project.worktrees_dir.as_deref())?;
 
@@ -420,20 +581,9 @@ fn create_entry(app: &AppHandle, project: &Project, auto_pull: bool) -> Result<P
     let start_point = resolve_start_point(&project.path, &base, None, auto_pull);
     git::create_worktree(&project.path, &path, &name, &start_point)?;
 
-    let setup_script = git::resolve_jean_config(&path, Some(&project.path))
-        .and_then(|config| config.scripts.setup);
-    let (setup_output, setup_success) = match setup_script.as_deref() {
-        Some(script) => match git::run_setup_script(&path, &project.path, &name, script) {
-            Ok(output) => (Some(output), Some(true)),
-            Err(e) => {
-                log::warn!("Worktree pool: setup script failed for {path}: {e}");
-                (Some(e), Some(false))
-            }
-        },
-        None => (None, None),
-    };
-
-    Ok(PoolEntry {
+    // Tracked as busy from now on, so a crash during setup leaves a trace that
+    // `cleanup_stale_entries` removes at the next start.
+    let mut entry = PoolEntry {
         id: Uuid::new_v4().to_string(),
         project_id: project.id.clone(),
         project_path: project.path.clone(),
@@ -442,9 +592,37 @@ fn create_entry(app: &AppHandle, project: &Project, auto_pull: bool) -> Result<P
         branch: name,
         base_branch: base,
         created_at: now(),
-        setup_script,
-        setup_output,
-        setup_success,
+        setup_script: None,
+        setup_output: None,
+        setup_success: None,
+        busy: true,
+    };
+    if let Err(e) = with_pool_mut(app, |data| data.entries.push(entry.clone())) {
+        remove_entry_checkout(&entry, false);
+        return Err(e);
+    }
+
+    entry.setup_script = git::resolve_jean_config(&entry.path, Some(&project.path))
+        .and_then(|config| config.scripts.setup);
+    if let Some(script) = entry.setup_script.as_deref() {
+        match git::run_setup_script(&entry.path, &project.path, &entry.name, script) {
+            Ok(output) => {
+                entry.setup_output = Some(output);
+                entry.setup_success = Some(true);
+            }
+            Err(e) => {
+                log::warn!("Worktree pool: setup script failed for {}: {e}", entry.path);
+                entry.setup_output = Some(e);
+                entry.setup_success = Some(false);
+            }
+        }
+    }
+
+    entry.busy = false;
+    with_pool_mut(app, |data| {
+        if let Some(slot) = data.entries.iter_mut().find(|e| e.id == entry.id) {
+            *slot = entry.clone();
+        }
     })
 }
 
@@ -455,7 +633,7 @@ pub async fn get_worktree_pool_status(
     let idle = read_pool(&app)?
         .entries
         .iter()
-        .filter(|e| e.project_id == project_id)
+        .filter(|e| e.project_id == project_id && !e.busy)
         .count() as u32;
     Ok(WorktreePoolStatus {
         idle,
@@ -492,6 +670,7 @@ mod tests {
             setup_script: None,
             setup_output: None,
             setup_success: None,
+            busy: false,
         }
     }
 
@@ -564,13 +743,15 @@ mod tests {
         );
     }
 
-    fn project(pool: Option<bool>) -> Project {
+    /// Project "demo" whose worktrees dir is `<base>`; its folder is `<base>/demo`.
+    fn project(pool: Option<bool>, base: &Path) -> Project {
         let mut value = serde_json::json!({
             "id": "p1",
             "name": "demo",
             "path": "/repo",
             "default_branch": "main",
-            "added_at": 1
+            "added_at": 1,
+            "worktrees_dir": base.to_str().expect("path")
         });
         if let Some(enabled) = pool {
             value["worktree_pool_settings"] =
@@ -586,52 +767,133 @@ mod tests {
         }
     }
 
+    fn path_in(base: &Path, name: &str) -> String {
+        base.join("demo")
+            .join(name)
+            .to_str()
+            .expect("path")
+            .to_string()
+    }
+
     #[test]
-    fn take_removes_entry_and_second_take_gets_next() {
+    fn take_marks_entry_busy_and_second_take_gets_next() {
         let temp = tempfile::tempdir().expect("tempdir");
         let app = test_app(temp.path());
-        let newer = entry_at("p1", "/wt/newer", 20);
-        let older = entry_at("p1", "/wt/older", 10);
+        let base = temp.path().join("wt");
+        let newer = entry_at("p1", &path_in(&base, "newer"), 20);
+        let older = entry_at("p1", &path_in(&base, "older"), 10);
         with_pool_mut(&app, |data| {
             data.entries.push(newer.clone());
             data.entries.push(entry_at("p2", "/wt/other", 1));
             data.entries.push(older.clone());
         })
         .expect("write pool");
-        let project = project(Some(true));
+        let project = project(Some(true), &base);
 
         assert_eq!(take(&app, &project).map(|e| e.id), Some(older.id));
         assert_eq!(take(&app, &project).map(|e| e.id), Some(newer.id));
         assert_eq!(take(&app, &project), None);
-        assert_eq!(
-            pool_paths_for_project(&app, "p2"),
-            vec!["/wt/other".to_string()]
-        );
+        // Taken entries stay in the file as busy until the new worktree is saved.
+        let pool = read_pool(&app).expect("read");
+        assert_eq!(pool.entries.iter().filter(|e| e.busy).count(), 2);
+        assert!(pool.entries.iter().any(|e| e.project_id == "p2" && !e.busy));
     }
 
     #[test]
     fn take_returns_none_when_pool_disabled() {
         let temp = tempfile::tempdir().expect("tempdir");
         let app = test_app(temp.path());
-        with_pool_mut(&app, |data| data.entries.push(entry("p1", "/wt/a"))).expect("write pool");
+        let base = temp.path().join("wt");
+        with_pool_mut(&app, |data| {
+            data.entries.push(entry("p1", &path_in(&base, "a")))
+        })
+        .expect("write pool");
 
-        assert_eq!(take(&app, &project(Some(false))), None);
-        assert_eq!(take(&app, &project(None)), None);
-        assert_eq!(pool_paths_for_project(&app, "p1").len(), 1);
+        assert_eq!(take(&app, &project(Some(false), &base)), None);
+        assert_eq!(take(&app, &project(None, &base)), None);
+        assert!(read_pool(&app)
+            .expect("read")
+            .entries
+            .iter()
+            .all(|e| !e.busy));
     }
 
     #[test]
-    fn release_puts_entry_back() {
+    fn release_makes_busy_entry_idle_again() {
         let temp = tempfile::tempdir().expect("tempdir");
         let app = test_app(temp.path());
-        with_pool_mut(&app, |data| data.entries.push(entry("p1", "/wt/a"))).expect("write pool");
-        let taken = take(&app, &project(Some(true))).expect("taken");
-        assert!(pool_paths_for_project(&app, "p1").is_empty());
+        let base = temp.path().join("wt");
+        let original = entry("p1", &path_in(&base, "a"));
+        with_pool_mut(&app, |data| data.entries.push(original.clone())).expect("write pool");
+        let taken = take(&app, &project(Some(true), &base)).expect("taken");
+        assert!(taken.busy);
 
         // `release` also schedules a reconcile; test only the put-back part.
-        put_back(&app, taken.clone()).expect("put back");
+        put_back(&app, taken).expect("put back");
 
-        assert_eq!(read_pool(&app).expect("read").entries, vec![taken]);
+        assert_eq!(read_pool(&app).expect("read").entries, vec![original]);
+    }
+
+    #[test]
+    fn forget_removes_only_that_entry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = test_app(temp.path());
+        let keep = entry("p1", "/wt/keep");
+        let gone = entry("p1", "/wt/gone");
+        with_pool_mut(&app, |data| {
+            data.entries.push(keep.clone());
+            data.entries.push(gone.clone());
+        })
+        .expect("write pool");
+
+        forget(&app, &gone);
+
+        assert_eq!(read_pool(&app).expect("read").entries, vec![keep]);
+    }
+
+    #[test]
+    fn entry_outside_worktrees_dir_is_not_usable() {
+        let dir = Path::new("/wt/demo");
+        assert!(in_worktrees_dir(&entry("p1", "/wt/demo/a"), dir));
+        assert!(!in_worktrees_dir(&entry("p1", "/old/demo/a"), dir));
+        assert!(!in_worktrees_dir(&entry("p1", "/wt/demo/a/b"), dir));
+    }
+
+    #[test]
+    fn request_during_reconcile_makes_it_run_again() {
+        let id = "fill-guard-test";
+        let mut guard = FillGuard::acquire(id).expect("first acquire");
+        assert!(!guard.is_dirty());
+
+        assert!(FillGuard::acquire(id).is_none());
+        assert!(guard.is_dirty());
+
+        assert!(guard.finish_or_rerun());
+        assert!(!guard.is_dirty());
+        assert!(!guard.finish_or_rerun());
+
+        // The mark is cleared: a new reconcile can start.
+        assert!(FillGuard::acquire(id).is_some());
+    }
+
+    #[test]
+    fn cleanup_stale_entries_removes_busy_entries_only() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = test_app(temp.path());
+        let idle = entry("p1", "/wt/idle");
+        let busy = PoolEntry {
+            busy: true,
+            ..entry("p1", "/wt/busy")
+        };
+        with_pool_mut(&app, |data| {
+            data.entries.push(idle.clone());
+            data.entries.push(busy);
+        })
+        .expect("write pool");
+
+        cleanup_stale_entries(&app);
+
+        assert_eq!(read_pool(&app).expect("read").entries, vec![idle]);
     }
 
     #[test]

@@ -51,6 +51,7 @@ function JeanJsonForm({
   const [localTeardown, setLocalTeardown] = useState(
     jeanConfig?.scripts.teardown ?? ''
   )
+  const [localClaim, setLocalClaim] = useState(jeanConfig?.scripts.claim ?? '')
   const [localRun, setLocalRun] = useState<{ id: string; value: string }[]>(
     () => {
       const scripts = normalizeRunScripts(jeanConfig?.scripts.run)
@@ -97,11 +98,13 @@ function JeanJsonForm({
   const hasChanges = synced
     ? localSetup !== (jeanConfig?.scripts.setup ?? '') ||
       localTeardown !== (jeanConfig?.scripts.teardown ?? '') ||
+      localClaim !== (jeanConfig?.scripts.claim ?? '') ||
       JSON.stringify(currentRunFiltered) !==
         JSON.stringify(originalRunScripts) ||
       JSON.stringify(currentPortsFiltered) !== JSON.stringify(originalPorts)
     : localSetup.trim() !== '' ||
       localTeardown.trim() !== '' ||
+      localClaim.trim() !== '' ||
       currentRunFiltered.length > 0 ||
       currentPortsFiltered.length > 0
 
@@ -136,6 +139,7 @@ function JeanJsonForm({
           ...jeanConfig?.scripts,
           setup: localSetup.trim() || null,
           teardown: localTeardown.trim() || null,
+          claim: localClaim.trim() || null,
           run,
         },
         ports: validPorts.length > 0 ? validPorts : null,
@@ -145,6 +149,7 @@ function JeanJsonForm({
     jeanConfig,
     localSetup,
     localTeardown,
+    localClaim,
     localRun,
     localPorts,
     projectPath,
@@ -299,6 +304,20 @@ function JeanJsonForm({
               placeholder="e.g. docker compose down"
               value={localTeardown}
               onChange={e => setLocalTeardown(e.target.value)}
+              className="font-mono text-base md:text-sm"
+            />
+          </InlineField>
+          <InlineField
+            label="Claim script"
+            description="Runs when a ready worktree is taken from the pool, for example bun install"
+            htmlFor="claim-script"
+            layout="stacked"
+          >
+            <Input
+              id="claim-script"
+              placeholder="e.g. bun install"
+              value={localClaim}
+              onChange={e => setLocalClaim(e.target.value)}
               className="font-mono text-base md:text-sm"
             />
           </InlineField>

@@ -95,4 +95,26 @@ describe('linked project settings', () => {
       )
     })
   })
+
+  it('sends worktree pool settings', async () => {
+    isNativeApp.mockReturnValue(false)
+    const { result } = renderHook(() => useUpdateProjectSettings(), {
+      wrapper,
+    })
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        projectId: 'p1',
+        worktreePoolSettings: { enabled: true, min_idle: 1, max_idle: 3 },
+      })
+    })
+
+    expect(invokeForServer).toHaveBeenCalledWith(
+      expect.anything(),
+      'update_project_settings',
+      expect.objectContaining({
+        worktreePoolSettings: { enabled: true, min_idle: 1, max_idle: 3 },
+      })
+    )
+  })
 })

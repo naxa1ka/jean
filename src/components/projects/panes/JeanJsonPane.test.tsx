@@ -49,11 +49,34 @@ describe('JeanJsonPane', () => {
     expect(mutate).toHaveBeenCalledWith({
       projectPath: '/repo',
       config: {
-        scripts: { setup: 'bun ci', teardown: null, run: 'bun dev' },
+        scripts: {
+          setup: 'bun ci',
+          teardown: null,
+          claim: null,
+          run: 'bun dev',
+        },
         ports: [{ port: 3000, label: 'Web', host: undefined }],
         provider: config.provider,
       },
     })
+  })
+
+  it('saves the claim script, and null when empty', () => {
+    configResult = {
+      data: { ...config, scripts: { ...config.scripts, claim: 'bun i' } },
+      isLoading: false,
+    }
+    renderPane()
+    const claim = screen.getByLabelText('Claim script')
+    expect(claim).toHaveValue('bun i')
+
+    fireEvent.change(claim, { target: { value: 'bun install' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(mutate.mock.lastCall?.[0].config.scripts.claim).toBe('bun install')
+
+    fireEvent.change(claim, { target: { value: '  ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(mutate.mock.lastCall?.[0].config.scripts.claim).toBeNull()
   })
 
   it('shows the loaded config after the query finishes', () => {

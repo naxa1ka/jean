@@ -45,6 +45,7 @@ import {
   useAppDataDir,
   useSetProjectAvatar,
   useRemoveProjectAvatar,
+  useWorktreePoolStatus,
 } from '@/services/projects'
 import { usePreferences } from '@/services/preferences'
 import {
@@ -57,8 +58,17 @@ import {
 import { BackendLabel, getBackendLabel } from '@/components/ui/backend-label'
 import { useInstalledBackends } from '@/hooks/useInstalledBackends'
 import { modelOptions, type CliBackend } from '@/types/preferences'
-import type { ProjectPlanQueueSettings } from '@/types/projects'
+import type {
+  ProjectPlanQueueSettings,
+  ProjectWorktreePoolSettings,
+} from '@/types/projects'
 import { overrideHint } from './override-hint'
+
+const POOL_MAX = 10
+const clampPoolCount = (value: number, fallback: number) =>
+  Number.isFinite(value)
+    ? Math.min(POOL_MAX, Math.max(1, Math.round(value)))
+    : fallback
 
 const blurOnEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
   if (event.key === 'Enter') event.currentTarget.blur()
@@ -160,6 +170,49 @@ export function GeneralPane({
     },
     [projectId, updateSettings]
   )
+
+  const poolSettings: ProjectWorktreePoolSettings =
+    project?.worktree_pool_settings ?? { enabled: false, min_idle: 1, max_idle: 2 }
+  const { data: poolStatus } = useWorktreePoolStatus(
+    projectId,
+    poolSettings.enabled
+  )
+  const [localPoolMin, setLocalPoolMin] = useState<string | null>(null)
+  const [localPoolMax, setLocalPoolMax] = useState<string | null>(null)
+  const savePoolSettings = (next: ProjectWorktreePoolSettings) =>
+    updateSettings.mutate({ projectId, worktreePoolSettings: next })
+  // A new min raises max when needed; a new max lowers min when needed.
+  // The inputs are disabled while a save runs, so the next edit starts from saved data.
+  const commitPoolCount = (field: 'min_idle' | 'max_idle') => {
+    const local = field === 'min_idle' ? localPoolMin : localPoolMax
+    if (local === null) return
+    const clearLocal = () =>
+      field === 'min_idle' ? setLocalPoolMin(null) : setLocalPoolMax(null)
+    const value = clampPoolCount(Number(local), poolSettings[field])
+    // Empty or unchanged: nothing to save, show the saved value again.
+    if (local.trim() === '' || value === poolSettings[field]) {
+      clearLocal()
+      return
+    }
+    updateSettings.mutate(
+      {
+        projectId,
+        worktreePoolSettings:
+          field === 'min_idle'
+            ? {
+                ...poolSettings,
+                min_idle: value,
+                max_idle: Math.max(value, poolSettings.max_idle),
+              }
+            : {
+                ...poolSettings,
+                max_idle: value,
+                min_idle: Math.min(value, poolSettings.min_idle),
+              },
+      },
+      { onSettled: clearLocal }
+    )
+  }
 
   const handleProviderChange = useCallback(
     (value: string) => {
@@ -634,6 +687,73 @@ export function GeneralPane({
               disabled={updateSettings.isPending}
             />
           </InlineField>
+        </SettingsSection>
+
+        <SettingsSection
+          title="Worktree pool"
+          description="Jean keeps worktrees ready, with setup already done. A new worktree takes one from the pool. Pool worktrees are reset to the base branch when taken."
+        >
+          <InlineField
+            label="Keep ready worktrees"
+            description={
+              !poolSettings.enabled
+                ? 'Off by default'
+                : poolStatus
+                  ? `${poolStatus.idle} ready, ${poolStatus.filling} preparing`
+                  : 'Loading status…'
+            }
+            htmlFor="project-worktree-pool-enabled"
+          >
+            <Switch
+              id="project-worktree-pool-enabled"
+              checked={poolSettings.enabled}
+              onCheckedChange={enabled =>
+                savePoolSettings({ ...poolSettings, enabled })
+              }
+              disabled={updateSettings.isPending}
+            />
+          </InlineField>
+
+          {poolSettings.enabled && (
+            <>
+              <InlineField
+                label="Min ready"
+                description="Refill starts below this count"
+                htmlFor="project-worktree-pool-min"
+              >
+                <Input
+                  id="project-worktree-pool-min"
+                  type="number"
+                  min={1}
+                  max={POOL_MAX}
+                  value={localPoolMin ?? String(poolSettings.min_idle)}
+                  onChange={e => setLocalPoolMin(e.target.value)}
+                  onBlur={() => commitPoolCount('min_idle')}
+                  onKeyDown={blurOnEnter}
+                  disabled={updateSettings.isPending}
+                  className="w-24 text-base md:text-sm"
+                />
+              </InlineField>
+              <InlineField
+                label="Max ready"
+                description="Refill stops at this count"
+                htmlFor="project-worktree-pool-max"
+              >
+                <Input
+                  id="project-worktree-pool-max"
+                  type="number"
+                  min={1}
+                  max={POOL_MAX}
+                  value={localPoolMax ?? String(poolSettings.max_idle)}
+                  onChange={e => setLocalPoolMax(e.target.value)}
+                  onBlur={() => commitPoolCount('max_idle')}
+                  onKeyDown={blurOnEnter}
+                  disabled={updateSettings.isPending}
+                  className="w-24 text-base md:text-sm"
+                />
+              </InlineField>
+            </>
+          )}
         </SettingsSection>
       </div>
 

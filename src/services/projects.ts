@@ -3010,6 +3010,7 @@ export function useUpdateProjectSettings() {
       sentryProjects,
       autoFixSettings,
       planQueueSettings,
+      worktreePoolSettings,
     }: {
       projectId: string
       name?: string
@@ -3028,6 +3029,7 @@ export function useUpdateProjectSettings() {
       sentryProjects?: Project['sentry_projects']
       autoFixSettings?: Project['auto_fix_settings']
       planQueueSettings?: Project['plan_queue_settings']
+      worktreePoolSettings?: Project['worktree_pool_settings']
       linkedProjectIds?: string[]
     }): Promise<Project> => {
       if (!isTauri()) {
@@ -3071,6 +3073,7 @@ export function useUpdateProjectSettings() {
           sentryProjects,
           autoFixSettings,
           planQueueSettings,
+          worktreePoolSettings,
           linkedProjectIds: resourceLinkedProjectIds,
         }
       )
@@ -3118,6 +3121,21 @@ export function useAutoFixStatus(projectId: string, enabled: boolean) {
     enabled: enabled && Boolean(projectId),
     refetchInterval: enabled ? 10_000 : false,
     staleTime: 5_000,
+  })
+}
+
+/** Ready and preparing worktrees in a project's pool. Polls every 5s while enabled. */
+export function useWorktreePoolStatus(projectId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: [...projectsQueryKeys.all, 'worktree-pool-status', projectId],
+    queryFn: async (): Promise<{ idle: number; filling: number }> => {
+      const { serverId, resourceId } = resolveProjectServer(projectId)
+      return invokeForServer(serverId, 'get_worktree_pool_status', {
+        projectId: resourceId,
+      })
+    },
+    enabled: enabled && Boolean(projectId),
+    refetchInterval: enabled ? 5000 : false,
   })
 }
 
