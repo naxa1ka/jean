@@ -281,6 +281,8 @@ pub struct AppPreferences {
     pub http_server_token_required: bool, // Require token for web access (default true)
     #[serde(default = "default_auto_pull_base_branch")]
     pub auto_pull_base_branch: bool, // Auto-pull base branch before creating a new worktree
+    #[serde(default = "default_archive_retention_days")]
+    pub archive_retention_days: u32, // Days before archived worktrees are deleted (0 = never)
     #[serde(default)]
     pub debug_mode_enabled: bool, // Show debug panel in chat sessions (default: false)
     #[serde(default)]
@@ -1878,6 +1880,10 @@ mod tests {
         );
         assert_eq!(prefs.magic_prompt_modes.final_review_mode, "yolo");
     }
+}
+
+fn default_archive_retention_days() -> u32 {
+    7
 }
 
 fn default_auto_pull_base_branch() -> bool {
@@ -3622,6 +3628,7 @@ impl Default for AppPreferences {
             http_server_localhost_only: true, // Default to localhost-only for security
             http_server_token_required: default_http_server_token_required(),
             auto_pull_base_branch: default_auto_pull_base_branch(),
+            archive_retention_days: default_archive_retention_days(),
             debug_mode_enabled: false,
             agents_enabled: false,
             default_effort_level: default_effort_level(),

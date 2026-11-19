@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { isBaseSession, type Worktree } from '@/types/projects'
 import {
+  useArchiveWorktree,
   useDeleteWorktree,
   useOpenWorktreeInFinder,
   useOpenWorktreeInTerminal,
@@ -24,6 +25,7 @@ export function useWorktreeMenuActions({
 }: UseWorktreeMenuActionsProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const deleteWorktree = useDeleteWorktree()
+  const archiveWorktree = useArchiveWorktree()
   const openInFinder = useOpenWorktreeInFinder()
   const openInTerminal = useOpenWorktreeInTerminal()
   const openInEditor = useOpenWorktreeInEditor()
@@ -96,6 +98,11 @@ export function useWorktreeMenuActions({
     deleteWorktree.mutate({ worktreeId: worktree.id, projectId })
   }, [isBase, deleteWorktree, worktree.id, projectId])
 
+  const handleArchive = useCallback(() => {
+    if (isBase) return
+    archiveWorktree.mutate({ worktreeId: worktree.id, projectId })
+  }, [isBase, archiveWorktree, worktree.id, projectId])
+
   const handleDelete = useCallback(
     (skipTeardown = false) => {
       deleteWorktree.mutate({
@@ -128,6 +135,7 @@ export function useWorktreeMenuActions({
     handleOpenInTerminal,
     handleOpenInEditor,
     handleClose,
+    handleArchive,
     handleDelete,
   }
 }

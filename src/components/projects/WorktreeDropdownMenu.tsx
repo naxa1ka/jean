@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertCircle,
+  Archive,
   CircleDot,
   Code,
   FolderOpen,
@@ -122,6 +123,7 @@ export function WorktreeDropdownMenu({
     handleOpenInFinder,
     handleOpenInTerminal,
     handleOpenInEditor,
+    handleArchive,
     handleDelete,
   } = useWorktreeMenuActions({ worktree, projectId })
   const isMobile = useIsMobile()
@@ -548,6 +550,13 @@ export function WorktreeDropdownMenu({
             <DropdownMenuItem onClick={onCloseSession}>
               <X className="mr-2 h-4 w-4" />
               Close Session
+            </DropdownMenuItem>
+          )}
+
+          {!isBase && (
+            <DropdownMenuItem onClick={handleArchive}>
+              <Archive className="mr-2 h-4 w-4" />
+              Archive Worktree
             </DropdownMenuItem>
           )}
 

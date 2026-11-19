@@ -384,6 +384,22 @@ pub async fn dispatch_command(
             emit_cache_invalidation(app, &["projects"]);
             Ok(Value::Null)
         }
+        "archive_worktree" => {
+            let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;
+            crate::projects::archive_worktree(app.clone(), worktree_id).await?;
+            emit_cache_invalidation(app, &["projects"]);
+            Ok(Value::Null)
+        }
+        "unarchive_worktree" => {
+            let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;
+            let result = crate::projects::unarchive_worktree(app.clone(), worktree_id).await?;
+            emit_cache_invalidation(app, &["projects"]);
+            to_value(result)
+        }
+        "list_archived_worktrees" => {
+            let result = crate::projects::list_archived_worktrees(app.clone()).await?;
+            to_value(result)
+        }
         "get_project_branches" => {
             let project_id: String = field(&args, "projectId", "project_id")?;
             let result = crate::projects::get_project_branches(app.clone(), project_id).await?;
