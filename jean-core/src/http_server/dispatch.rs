@@ -445,6 +445,9 @@ pub async fn dispatch_command(
             let plan_queue_settings: Option<
                 Option<crate::projects::types::ProjectPlanQueueSettings>,
             > = field_nullable_option(&args, "planQueueSettings", "plan_queue_settings")?;
+            let worktree_pool_settings: Option<
+                Option<crate::projects::types::ProjectWorktreePoolSettings>,
+            > = field_nullable_option(&args, "worktreePoolSettings", "worktree_pool_settings")?;
             let result = crate::projects::update_project_settings(
                 app.clone(),
                 project_id,
@@ -465,10 +468,18 @@ pub async fn dispatch_command(
                 linked_project_ids,
                 auto_fix_settings,
                 plan_queue_settings,
+                worktree_pool_settings,
             )
             .await?;
             emit_cache_invalidation(app, &["projects"]);
             to_value(result)
+        }
+        "get_worktree_pool_status" => {
+            let project_id: String = field(&args, "projectId", "project_id")?;
+            to_value(
+                crate::projects::worktree_pool::get_worktree_pool_status(app.clone(), project_id)
+                    .await?,
+            )
         }
         "get_plan_queue" => {
             let worktree_id: String = field(&args, "worktreeId", "worktree_id")?;

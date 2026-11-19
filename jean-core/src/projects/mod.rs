@@ -19,6 +19,7 @@ mod servers;
 pub mod storage;
 pub mod types;
 mod unmanaged_worktrees;
+pub mod worktree_pool;
 
 // Re-export commands for registration in lib.rs
 pub use checkpoints::{

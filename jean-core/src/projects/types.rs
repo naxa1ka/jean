@@ -104,6 +104,43 @@ pub struct ProjectPlanQueueSettings {
     pub fix_findings: bool,
 }
 
+/// Per-project pool of ready worktrees (git checkout and setup script done).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProjectWorktreePoolSettings {
+    /// The maintainer keeps idle worktrees for this project only when true.
+    pub enabled: bool,
+    /// Refill starts when fewer idle worktrees than this are ready.
+    pub min_idle: u32,
+    /// Refill fills up to this count; extra idle worktrees are removed.
+    pub max_idle: u32,
+}
+
+impl Default for ProjectWorktreePoolSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_idle: 1,
+            max_idle: 2,
+        }
+    }
+}
+
+impl ProjectWorktreePoolSettings {
+    pub const MAX_IDLE_LIMIT: u32 = 10;
+
+    /// Clamp to `1 <= min_idle <= max_idle <= 10`.
+    pub fn normalize(&self) -> Self {
+        let min_idle = self.min_idle.clamp(1, Self::MAX_IDLE_LIMIT);
+        let max_idle = self.max_idle.clamp(min_idle, Self::MAX_IDLE_LIMIT);
+        Self {
+            enabled: self.enabled,
+            min_idle,
+            max_idle,
+        }
+    }
+}
+
 /// Per-project automated issue fixing settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectAutoFixSettings {
@@ -315,6 +352,9 @@ pub struct Project {
     /// Per-project native plan queue settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_queue_settings: Option<ProjectPlanQueueSettings>,
+    /// Per-project pool of ready worktrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_pool_settings: Option<ProjectWorktreePoolSettings>,
     /// SSH target when this project is a managed server (None = git repository)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<ProjectServer>,
@@ -1110,6 +1150,20 @@ mod label_tests {
         let parsed: ProjectPlanQueueSettings =
             serde_json::from_value(serde_json::json!({ "fix_findings": true })).unwrap();
         assert!(parsed.fix_findings);
+    }
+
+    #[test]
+    fn pool_settings_missing_fields_use_defaults() {
+        let parsed: ProjectWorktreePoolSettings =
+            serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
+        assert_eq!(
+            parsed,
+            ProjectWorktreePoolSettings {
+                enabled: true,
+                min_idle: 1,
+                max_idle: 2,
+            }
+        );
     }
 
     #[test]
