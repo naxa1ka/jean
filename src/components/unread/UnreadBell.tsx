@@ -830,7 +830,12 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
                   </>
                 )}
                 {trackedCount > 0 && (
-                  <span className="flex items-center gap-0.5 text-muted-foreground">
+                  <span
+                    className={cn(
+                      'flex items-center gap-0.5 text-muted-foreground',
+                      displayCount > 0 && 'ml-1.5'
+                    )}
+                  >
                     <Bookmark className="h-3.5 w-3.5 shrink-0" />
                     {trackedCount}
                   </span>
