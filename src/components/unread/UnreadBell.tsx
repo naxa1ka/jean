@@ -938,7 +938,7 @@ export function UnreadBell({ title, hideTitle }: UnreadBellProps) {
                             worktreeName={item.worktree_name}
                             serverName={item.serverName}
                           />
-                          <span className="ml-auto shrink-0">
+                          <span className="ml-auto flex shrink-0">
                             {hint(focused, 'D', 'Press D for Done')}
                           </span>
                         </div>
