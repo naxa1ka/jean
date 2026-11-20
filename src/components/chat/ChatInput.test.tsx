@@ -801,9 +801,11 @@ describe('ChatInput attachments', () => {
       type: 'image/png',
       lastModified: 123,
     })
+    // Chromium reports the current time for clipboard files, so the two
+    // copies usually differ in lastModified.
     const filesImage = new File(['png'], 'image.png', {
       type: 'image/png',
-      lastModified: 123,
+      lastModified: 124,
     })
     processAttachmentFile.mockResolvedValue(undefined)
 
