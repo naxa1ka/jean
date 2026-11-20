@@ -1000,16 +1000,11 @@ export const ChatInput = memo(function ChatInput({
         attachmentFiles.push(file)
       }
       // iOS can expose a file copied from the share sheet through `files`
-      // while leaving `items` empty.
-      for (const file of Array.from(e.clipboardData?.files ?? [])) {
-        const isAlreadyExposedByItem = attachmentFiles.some(
-          attachmentFile =>
-            attachmentFile.name === file.name &&
-            attachmentFile.type === file.type &&
-            attachmentFile.size === file.size &&
-            attachmentFile.lastModified === file.lastModified
-        )
-        if (!isAlreadyExposedByItem) {
+      // while leaving `items` empty. Chromium lists the same file in both, and
+      // its `lastModified` is the read time, so copies cannot be matched by
+      // value. Use `files` only when `items` gave no file.
+      if (attachmentFiles.length === 0) {
+        for (const file of Array.from(e.clipboardData?.files ?? [])) {
           e.preventDefault()
           attachmentFiles.push(file)
         }
