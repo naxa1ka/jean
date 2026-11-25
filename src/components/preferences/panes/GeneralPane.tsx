@@ -201,7 +201,6 @@ import {
   type NewSessionKind,
   CLOSE_CONFIRM_BYPASS_MODIFIERS,
   type CloseConfirmBypassModifier,
-  archiveRetentionOptions,
 } from '@/types/preferences'
 import { closeConfirmBypassLabel } from '@/lib/confirm-bypass'
 import {
@@ -3674,32 +3673,38 @@ export const GeneralPane: React.FC<{ scope?: PreferencesPaneScope }> = ({
 
               <InlineField
                 label="Auto-delete archived worktrees"
-                description="Deletes the folder and local branch after this time"
+                description="Days before the folder and local branch are deleted. 0 = keep forever."
               >
-                <Select
-                  value={String(preferences?.archive_retention_days ?? 7)}
-                  onValueChange={value => {
-                    if (preferences) {
-                      patchPreferences.mutate({
-                        archive_retention_days: Number(value),
-                      })
+                <Input
+                  // Remount when the saved value changes (late load, other clients).
+                  key={preferences?.archive_retention_days ?? 7}
+                  type="number"
+                  min={0}
+                  max={3650}
+                  defaultValue={preferences?.archive_retention_days ?? 7}
+                  aria-label="Days before archived worktrees are deleted"
+                  className="h-8 w-24"
+                  onBlur={event => {
+                    const parsed = Number.parseInt(event.target.value, 10)
+                    if (!Number.isFinite(parsed)) {
+                      event.target.value = String(
+                        preferences?.archive_retention_days ?? 7
+                      )
+                      return
+                    }
+                    const next = Math.min(Math.max(parsed, 0), 3650)
+                    event.target.value = String(next)
+                    if (
+                      preferences &&
+                      next !== preferences.archive_retention_days
+                    ) {
+                      patchPreferences.mutate({ archive_retention_days: next })
                     }
                   }}
-                >
-                  <SelectTrigger className="w-full sm:w-80">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {archiveRetentionOptions.map(option => (
-                      <SelectItem
-                        key={option.value}
-                        value={String(option.value)}
-                      >
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') event.currentTarget.blur()
+                  }}
+                />
               </InlineField>
 
               <ArchivedWorktreesField />

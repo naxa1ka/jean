@@ -23,11 +23,7 @@ export interface MagicCodeReviewConfig {
 export type NotificationSound = 'none' | 'workwork' | 'jobsdone'
 export type TerminalRenderer = 'xterm' | 'ghostty-web'
 export type TerminalFont =
-  | 'jetbrains-mono'
-  | 'fira-code'
-  | 'source-code-pro'
-  | 'sf-mono'
-  | 'system'
+  'jetbrains-mono' | 'fira-code' | 'source-code-pro' | 'sf-mono' | 'system'
 
 export const notificationSoundOptions: {
   value: NotificationSound
@@ -2547,12 +2543,7 @@ export const terminalOptions: { value: TerminalApp; label: string }[] =
   getTerminalOptions()
 
 export type EditorApp =
-  | 'zed'
-  | 'vscode'
-  | 'vscodium'
-  | 'cursor'
-  | 'xcode'
-  | 'intellij'
+  'zed' | 'vscode' | 'vscodium' | 'cursor' | 'xcode' | 'intellij'
 
 const allEditorOptions: {
   value: EditorApp
@@ -2747,16 +2738,6 @@ export const terminalFontOptions: { value: TerminalFont; label: string }[] = [
   { value: 'source-code-pro', label: 'Source Code Pro' },
   { value: 'sf-mono', label: 'SF Mono / Menlo' },
   { value: 'system', label: 'System Monospace' },
-]
-
-// Archive retention options (days) - how long archived worktrees are kept
-export const archiveRetentionOptions: { value: number; label: string }[] = [
-  { value: 0, label: 'Never (keep forever)' },
-  { value: 7, label: '7 days' },
-  { value: 14, label: '14 days' },
-  { value: 30, label: '30 days' },
-  { value: 60, label: '60 days' },
-  { value: 90, label: '90 days' },
 ]
 
 // Syntax highlighting themes (from shiki bundled themes)
