@@ -611,7 +611,7 @@ function CompactQuestionMessage({
     () =>
       (message.tool_calls ?? []).flatMap(tool => {
         const request = secretRequest(tool)
-        return request ? [{ id: tool.id, request }] : []
+        return request ? [{ toolCallId: tool.id, request }] : []
       }),
     [message]
   )
@@ -698,17 +698,15 @@ function CompactQuestionMessage({
           />
         )
       })}
-      {secretRequests.map(({ id, request }) => (
+      {secretRequests.length > 0 && (
         <SecretRequestCard
-          key={id}
           sessionId={sessionId}
-          toolCallId={id}
-          request={request}
+          requests={secretRequests}
           answered={hasFollowUpMessage}
           disabled={isSending}
           onSend={onSendAnswer}
         />
-      ))}
+      )}
       {showsSecretList && <SecretListCard sessionId={sessionId} />}
       {durationMs != null && durationMs > 0 && (
         <span className="mt-1 block min-h-4 text-xs leading-4 text-muted-foreground/40 tabular-nums font-mono">

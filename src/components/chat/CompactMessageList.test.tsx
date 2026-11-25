@@ -808,6 +808,144 @@ describe('CompactMessageList request_secret', () => {
     })
   })
 
+  describe('with several requests in one message', () => {
+    const twoSecretMessages = [
+      message('user-1', 'user', 100, 'set up the servers'),
+      message('assistant-1', 'assistant', 104, '', {
+        tool_calls: [
+          {
+            id: 'tool-1',
+            name: 'mcp__jean__request_secret',
+            input: {
+              label: 'Tailscale auth key',
+              reason: 'Create it in admin.',
+            },
+          },
+          {
+            id: 'tool-2',
+            name: 'mcp__jean__request_secret',
+            input: {
+              label: 'Hetzner token',
+              reason: 'Create it in the console.',
+            },
+          },
+        ],
+        content_blocks: [
+          { type: 'tool_use', tool_call_id: 'tool-1' },
+          { type: 'tool_use', tool_call_id: 'tool-2' },
+        ],
+      }),
+    ]
+
+    const mockSaves = (failFor?: string) =>
+      vi.mocked(invoke).mockImplementation((async (
+        command: string,
+        args?: Record<string, unknown>
+      ) => {
+        if (command === 'secret_request_status') return null
+        if (command === 'save_secret_request') {
+          if (args?.toolCallId === failFor) throw new Error('disk full')
+          return {
+            path: `/data/secrets/${String(args?.toolCallId)}`,
+            retention: 'forever',
+          }
+        }
+        return null
+      }) as typeof invoke)
+
+    const saveCalls = () =>
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === 'save_secret_request')
+
+    it('saves all fields with one click and sends one message', async () => {
+      mockSaves()
+      vi.mocked(invoke).mockClear()
+      const onSendAnswer = vi.fn()
+      renderCompact(twoSecretMessages, { onSendAnswer })
+
+      fireEvent.change(screen.getByLabelText('Tailscale auth key'), {
+        target: { value: 'tskey-1' },
+      })
+      fireEvent.change(screen.getByLabelText('Hetzner token'), {
+        target: { value: 'hcloud-2' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Save securely' }))
+
+      await waitFor(() => expect(onSendAnswer).toHaveBeenCalledTimes(1))
+      expect(saveCalls()).toHaveLength(2)
+      const sent = onSendAnswer.mock.calls[0]?.[0] as string
+      expect(sent).toContain('/data/secrets/tool-1')
+      expect(sent).toContain('/data/secrets/tool-2')
+      expect(sent).not.toContain('tskey-1')
+      expect(sent).not.toContain('hcloud-2')
+    })
+
+    it('counts a blank field as declined', async () => {
+      mockSaves()
+      vi.mocked(invoke).mockClear()
+      const onSendAnswer = vi.fn()
+      renderCompact(twoSecretMessages, { onSendAnswer })
+
+      fireEvent.change(screen.getByLabelText('Tailscale auth key'), {
+        target: { value: 'tskey-1' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Save securely' }))
+
+      await waitFor(() => expect(onSendAnswer).toHaveBeenCalledTimes(1))
+      expect(saveCalls()).toHaveLength(1)
+      const sent = onSendAnswer.mock.calls[0]?.[0] as string
+      expect(sent).toContain('/data/secrets/tool-1')
+      expect(sent).toContain('I declined to give "Hetzner token".')
+      expect(await screen.findByText('Hetzner token · declined')).toBeVisible()
+    })
+
+    it('sends nothing when a save fails and saves only the rest on retry', async () => {
+      mockSaves('tool-2')
+      vi.mocked(invoke).mockClear()
+      const onSendAnswer = vi.fn()
+      renderCompact(twoSecretMessages, { onSendAnswer })
+
+      fireEvent.change(screen.getByLabelText('Tailscale auth key'), {
+        target: { value: 'tskey-1' },
+      })
+      fireEvent.change(screen.getByLabelText('Hetzner token'), {
+        target: { value: 'hcloud-2' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Save securely' }))
+
+      expect(
+        await screen.findByText(
+          'Tailscale auth key · saved, kept until the user deletes it'
+        )
+      ).toBeVisible()
+      expect(onSendAnswer).not.toHaveBeenCalled()
+
+      mockSaves()
+      vi.mocked(invoke).mockClear()
+      fireEvent.click(screen.getByRole('button', { name: 'Save securely' }))
+
+      await waitFor(() => expect(onSendAnswer).toHaveBeenCalledTimes(1))
+      expect(saveCalls()).toHaveLength(1)
+      const sent = onSendAnswer.mock.calls[0]?.[0] as string
+      expect(sent).toContain('/data/secrets/tool-1')
+      expect(sent).toContain('/data/secrets/tool-2')
+    })
+
+    it('sends one message when the user declines all', () => {
+      mockSaves()
+      const onSendAnswer = vi.fn()
+      renderCompact(twoSecretMessages, { onSendAnswer })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Decline' }))
+
+      expect(onSendAnswer).toHaveBeenCalledTimes(1)
+      expect(onSendAnswer).toHaveBeenCalledWith(
+        'I declined to give "Tailscale auth key".\n\nI declined to give "Hetzner token".'
+      )
+    })
+  })
+
   it('closes the card once a user message follows it', async () => {
     mockSecretCommands(null)
     renderCompact([

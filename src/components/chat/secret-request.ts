@@ -86,3 +86,17 @@ export function isSecretSavedMessage(content: string): boolean {
 export function secretDeclinedMessage(label: string): string {
   return `I declined to give "${label}".`
 }
+
+/**
+ * One user message for all secrets of a card. Saved secrets come first, so
+ * `isSecretSavedMessage` still matches and the chat hides the message.
+ */
+export function secretAnswerMessage(
+  saved: { label: string; saved: SavedSecret }[],
+  declined: string[]
+): string {
+  return [
+    ...saved.map(item => secretSavedMessage(item.label, item.saved)),
+    ...declined.map(secretDeclinedMessage),
+  ].join('\n\n')
+}

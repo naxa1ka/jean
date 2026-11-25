@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ToolCall } from '@/types/chat'
 import {
   isSecretSavedMessage,
+  secretAnswerMessage,
   secretDeclinedMessage,
   secretRequest,
   secretSavedMessage,
@@ -71,6 +72,24 @@ describe('secret messages', () => {
     expect(saved).toContain(`TOKEN="$(cat '/data/secrets/abc')"`)
     expect(saved).toContain('kept until the user deletes it')
     expect(secretDeclinedMessage('Key')).toBe('I declined to give "Key".')
+  })
+})
+
+describe('secretAnswerMessage', () => {
+  const saved = { path: '/s/1', retention: 'day' as const }
+
+  it('puts saved secrets first and the declined ones after', () => {
+    const text = secretAnswerMessage([{ label: 'A', saved }], ['B'])
+    expect(text).toBe(
+      `${secretSavedMessage('A', saved)}\n\n${secretDeclinedMessage('B')}`
+    )
+    expect(isSecretSavedMessage(text)).toBe(true)
+  })
+
+  it('joins only declined labels when nothing is saved', () => {
+    const text = secretAnswerMessage([], ['A', 'B'])
+    expect(text).toBe('I declined to give "A".\n\nI declined to give "B".')
+    expect(isSecretSavedMessage(text)).toBe(false)
   })
 })
 
