@@ -16,6 +16,7 @@ import {
   selectNeighborAfterClose,
   sessionsForTabBar,
   sortSessionCardsForTabs,
+  tabIdsToClose,
 } from './session-lifecycle'
 
 function session(id: string, order: number, created_at = order): Session {
@@ -185,6 +186,27 @@ describe('openSessions', () => {
         { id: 'c' },
       ]).map(item => item.id)
     ).toEqual(['a', 'c'])
+  })
+})
+
+describe('tabIdsToClose', () => {
+  const tabs = ['a', 'b', 'c', 'd']
+
+  it('others: every tab except the target, in order', () => {
+    expect(tabIdsToClose(tabs, 'b', 'others')).toEqual(['a', 'c', 'd'])
+  })
+
+  it('right: only the tabs after the target', () => {
+    expect(tabIdsToClose(tabs, 'b', 'right')).toEqual(['c', 'd'])
+  })
+
+  it('right: the last tab has nothing to close', () => {
+    expect(tabIdsToClose(tabs, 'd', 'right')).toEqual([])
+  })
+
+  it('closes nothing for an unknown target', () => {
+    expect(tabIdsToClose(tabs, 'x', 'others')).toEqual([])
+    expect(tabIdsToClose(tabs, 'x', 'right')).toEqual([])
   })
 })
 

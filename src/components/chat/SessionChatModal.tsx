@@ -97,6 +97,7 @@ import {
   finishedSubSessionIds,
   isActiveSessionGone,
   isSessionBusy,
+  isSessionEmpty,
   leadIdsOf,
   nestUnderLeads,
   openSessions,
@@ -104,6 +105,7 @@ import {
   selectNeighborAfterClose,
   sessionsForTabBar,
   sortSessionCardsForTabs,
+  tabIdsToClose,
   type SessionCloseDecision,
 } from './session-lifecycle'
 import { useSubSessionStore } from '@/store/sub-session-store'
@@ -641,6 +643,7 @@ export const SessionChatModal = memo(function SessionChatModal({
   const [closeConfirmMode, setCloseConfirmMode] =
     useState<CloseConfirmMode>('session')
   const [closeSubSessionCount, setCloseSubSessionCount] = useState(0)
+  const [closeSessionCount, setCloseSessionCount] = useState(1)
   const pendingCloseAction = useRef<
     ((options: { closeSubSessions: boolean }) => void) | null
   >(null)
@@ -697,6 +700,7 @@ export const SessionChatModal = memo(function SessionChatModal({
       if (decision === 'confirm-session') {
         setCloseConfirmMode('session')
         setCloseSubSessionCount(subSessionIds.length)
+        setCloseSessionCount(1)
         pendingCloseAction.current = closeTab
         setCloseConfirmOpen(true)
       } else {
@@ -1221,22 +1225,86 @@ export const SessionChatModal = memo(function SessionChatModal({
     />
   )
 
-  const renderSessionMenuItems = (session: Session) => (
-    <SessionContextMenuItems
-      session={session}
-      worktreeId={worktreeId}
-      resumeCommand={getResumeCommand(session)}
-      nativeClientPending={isOpeningInNativeClient}
-      onRename={() => handleStartRename(session.id, session.name)}
-      onToggleLabel={() => {
-        setLabelTargetSessionId(session.id)
-        setLabelModalOpen(true)
-      }}
-      onOpenInNativeClient={() => handleOpenInNativeClient(session)}
-      onReconnect={() => void reconnectNativeCliSession(session, worktreeId)}
-      onDelete={() => removeSessionTab(session)}
-    />
+  // Bulk close from a tab menu: other tabs, or the tabs after the target, in
+  // the visible order. Busy sessions stay open; one confirm covers the batch.
+  const closeTabGroup = useCallback(
+    (target: Session, scope: 'others' | 'right') => {
+      const ids = new Set(
+        tabIdsToClose(
+          sortedCards.map(card => card.session.id),
+          target.id,
+          scope
+        )
+      )
+      const candidates = sortedCards.filter(card => ids.has(card.session.id))
+      const closable = candidates
+        .filter(card => !isSessionBusy(card.status))
+        .map(card => card.session)
+      const keptOpen = candidates.length - closable.length
+      if (keptOpen > 0) {
+        toast.info(
+          `Kept ${keptOpen} running session${keptOpen === 1 ? '' : 's'} open`
+        )
+      }
+      const [first, ...rest] = closable
+      if (!first) return
+
+      const run = () => {
+        const { activeSessionIds, setActiveSession } = useChatStore.getState()
+        const activeId = activeSessionIds[worktreeId]
+        if (activeId && closable.some(s => s.id === activeId)) {
+          setActiveSession(worktreeId, target.id)
+        }
+        void closeSessions(
+          worktreeId,
+          worktreePath,
+          first.id,
+          rest.map(s => s.id)
+        )
+      }
+      const { inputDrafts } = useChatStore.getState()
+      if (closable.every(s => isSessionEmpty(s, inputDrafts))) {
+        run()
+        return
+      }
+      setCloseConfirmMode('session')
+      setCloseSubSessionCount(0)
+      setCloseSessionCount(closable.length)
+      pendingCloseAction.current = run
+      setCloseConfirmOpen(true)
+    },
+    [sortedCards, closeSessions, worktreeId, worktreePath]
   )
+
+  const renderSessionMenuItems = (session: Session) => {
+    const index = sortedCards.findIndex(card => card.session.id === session.id)
+    return (
+      <SessionContextMenuItems
+        session={session}
+        worktreeId={worktreeId}
+        resumeCommand={getResumeCommand(session)}
+        nativeClientPending={isOpeningInNativeClient}
+        onRename={() => handleStartRename(session.id, session.name)}
+        onToggleLabel={() => {
+          setLabelTargetSessionId(session.id)
+          setLabelModalOpen(true)
+        }}
+        onOpenInNativeClient={() => handleOpenInNativeClient(session)}
+        onReconnect={() => void reconnectNativeCliSession(session, worktreeId)}
+        onCloseOtherTabs={
+          sortedCards.length > 1
+            ? () => closeTabGroup(session, 'others')
+            : undefined
+        }
+        onCloseTabsToRight={
+          index !== -1 && index < sortedCards.length - 1
+            ? () => closeTabGroup(session, 'right')
+            : undefined
+        }
+        onDelete={() => removeSessionTab(session)}
+      />
+    )
+  }
 
   return (
     <>
@@ -1708,6 +1776,7 @@ export const SessionChatModal = memo(function SessionChatModal({
         finishedSubSessionCount={
           closeConfirmMode === 'session' ? closeSubSessionCount : 0
         }
+        sessionCount={closeSessionCount}
       />
     </>
   )
