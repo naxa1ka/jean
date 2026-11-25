@@ -113,6 +113,34 @@ describe('SessionContextMenuItems', () => {
     ])
   })
 
+  it('shows the bulk tab-close items only when handlers are given', async () => {
+    const onCloseOtherTabs = vi.fn()
+    const onCloseTabsToRight = vi.fn()
+    const user = userEvent.setup()
+    renderMenu({ onCloseOtherTabs, onCloseTabsToRight })
+
+    const labels = screen.getAllByRole('menuitem').map(item => item.textContent)
+    expect(labels).toEqual([
+      'Rename',
+      'Marks…',
+      'Copy Session ID',
+      'Close Other Tabs',
+      'Close Tabs to the Right',
+      'Delete Session',
+    ])
+
+    await user.click(screen.getByRole('menuitem', { name: 'Close Other Tabs' }))
+    expect(onCloseOtherTabs).toHaveBeenCalledTimes(1)
+    expect(onCloseTabsToRight).not.toHaveBeenCalled()
+  })
+
+  it('hides a bulk close item when its handler is missing', () => {
+    renderMenu({ onCloseOtherTabs: vi.fn() })
+    expect(
+      screen.queryByRole('menuitem', { name: 'Close Tabs to the Right' })
+    ).not.toBeInTheDocument()
+  })
+
   it('is the menu used by both the tab bar and the sidebar', () => {
     for (const path of [
       'src/components/chat/SessionChatModal.tsx',

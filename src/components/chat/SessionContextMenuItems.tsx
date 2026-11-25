@@ -1,11 +1,13 @@
 import { toast } from 'sonner'
 import {
+  ArrowRight,
   Copy,
   Pencil,
   Play,
   RefreshCw,
   Tag,
   Trash2,
+  X,
 } from '@/components/icons/reicon'
 import {
   ContextMenuCheckboxItem,
@@ -35,12 +37,17 @@ interface SessionContextMenuItemsProps {
   onToggleLabel: () => void
   onOpenInNativeClient?: () => void
   onReconnect?: () => void
+  /** Tab bar only: close every other tab. Hidden when not given. */
+  onCloseOtherTabs?: () => void
+  /** Tab bar only: close the tabs after this one. Hidden when not given. */
+  onCloseTabsToRight?: () => void
   onDelete: () => void
 }
 
 /**
  * Session right-click actions shared by the worktree tab bar and the sidebar
  * session rows. Keep this as the only item list so the two menus stay aligned.
+ * The bulk tab-close items show only where the caller passes their handlers.
  */
 export function SessionContextMenuItems({
   session,
@@ -51,6 +58,8 @@ export function SessionContextMenuItems({
   onToggleLabel,
   onOpenInNativeClient,
   onReconnect,
+  onCloseOtherTabs,
+  onCloseTabsToRight,
   onDelete,
 }: SessionContextMenuItemsProps) {
   const serverId = getResourceServerId(worktreeId)
@@ -129,6 +138,23 @@ export function SessionContextMenuItems({
         <Copy className="mr-2 h-4 w-4" />
         Copy Session ID
       </ContextMenuItem>
+      {(onCloseOtherTabs || onCloseTabsToRight) && (
+        <>
+          <ContextMenuSeparator />
+          {onCloseOtherTabs && (
+            <ContextMenuItem onSelect={onCloseOtherTabs}>
+              <X className="mr-2 h-4 w-4" />
+              Close Other Tabs
+            </ContextMenuItem>
+          )}
+          {onCloseTabsToRight && (
+            <ContextMenuItem onSelect={onCloseTabsToRight}>
+              <ArrowRight className="mr-2 h-4 w-4" />
+              Close Tabs to the Right
+            </ContextMenuItem>
+          )}
+        </>
+      )}
       <ContextMenuSeparator />
       <ContextMenuItem variant="destructive" onSelect={onDelete}>
         <Trash2 className="mr-2 h-4 w-4" />

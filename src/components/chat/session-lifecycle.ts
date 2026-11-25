@@ -329,6 +329,22 @@ export function isSessionEmpty(
   return !session.message_count && !inputDrafts[session.id]?.trim()
 }
 
+/**
+ * The tabs a bulk close removes: every other tab, or the tabs after `targetId`,
+ * in the visible tab order. An unknown target closes nothing.
+ */
+export function tabIdsToClose(
+  tabIds: readonly string[],
+  targetId: string,
+  scope: 'others' | 'right'
+): string[] {
+  const index = tabIds.indexOf(targetId)
+  if (index === -1) return []
+  return scope === 'others'
+    ? tabIds.filter(id => id !== targetId)
+    : tabIds.slice(index + 1)
+}
+
 export type SessionCloseDecision =
   | 'close-session'
   | 'confirm-session'

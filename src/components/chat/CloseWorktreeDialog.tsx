@@ -32,6 +32,8 @@ interface CloseWorktreeDialogProps {
   worktree?: Worktree
   /** Finished sub-sessions of the session to delete, offered to delete too. */
   finishedSubSessionCount?: number
+  /** Sessions the confirm deletes in session mode (bulk tab close). */
+  sessionCount?: number
 }
 
 export function CloseWorktreeDialog({
@@ -42,6 +44,7 @@ export function CloseWorktreeDialog({
   mode = 'worktree',
   worktree,
   finishedSubSessionCount = 0,
+  sessionCount = 1,
 }: CloseWorktreeDialogProps) {
   if (!open) return null
 
@@ -54,6 +57,7 @@ export function CloseWorktreeDialog({
       mode={mode}
       worktree={worktree}
       finishedSubSessionCount={finishedSubSessionCount}
+      sessionCount={sessionCount}
     />
   )
 }
@@ -66,6 +70,7 @@ function CloseWorktreeDialogContent({
   mode = 'worktree',
   worktree,
   finishedSubSessionCount = 0,
+  sessionCount = 1,
 }: CloseWorktreeDialogProps) {
   const uncommitted = useWorktreeUncommittedChanges(
     mode === 'worktree' ? worktree : undefined
@@ -82,9 +87,14 @@ function CloseWorktreeDialogContent({
   const showBypassHint = isNativeApp() && !isMobile && bypassLabel !== null
   const offersSubSessions = isSession && finishedSubSessionCount > 0
   const [closeSubSessions, setCloseSubSessions] = useState(true)
-  const title = isSession ? 'Delete session?' : 'Delete worktree?'
+  const manySessions = isSession && sessionCount > 1
+  const title = manySessions
+    ? `Delete ${sessionCount} sessions?`
+    : isSession
+      ? 'Delete session?'
+      : 'Delete worktree?'
   const description = isSession
-    ? 'This will delete this session. Deleted sessions are removed from disk after 30 days.'
+    ? `This will delete ${manySessions ? `${sessionCount} sessions` : 'this session'}. Deleted sessions are removed from disk after 30 days.`
     : branchName
       ? `This will permanently delete the "${branchName}" worktree and all its sessions.`
       : 'This will permanently delete the worktree and all its sessions.'
