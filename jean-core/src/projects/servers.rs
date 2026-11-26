@@ -200,6 +200,7 @@ async fn create_server_project(
             .as_secs(),
         order: data.get_next_order(parent_id.as_deref()),
         parent_id,
+        worktree_groups: Vec::new(),
         is_folder: false,
         avatar_path: None,
         default_avatar_path: None,

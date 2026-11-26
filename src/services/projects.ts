@@ -28,6 +28,7 @@ import type {
   Project,
   ProjectServer,
   Worktree,
+  WorktreeGroup,
   UnmanagedWorktreeListing,
   DetectPrResponse,
   LinkWorktreePrResponse,
@@ -3289,6 +3290,35 @@ export function useReorderProjects() {
 }
 
 /**
+ * Worktrees with `order` 1..n in `worktreeIds` order, like the backend's
+ * `reorder_worktrees`. Base sessions stay 0; unlisted worktrees keep theirs.
+ */
+function withWorktreeOrder(
+  worktrees: Worktree[],
+  worktreeIds: readonly string[]
+): Worktree[] {
+  const worktreeById = new Map(worktrees.map(w => [w.id, w]))
+  const orderById = new Map<string, number>()
+  let nextOrder = 1
+  for (const worktreeId of worktreeIds) {
+    const worktree = worktreeById.get(worktreeId)
+    if (worktree && worktree.session_type !== 'base') {
+      orderById.set(worktreeId, nextOrder)
+      nextOrder += 1
+    }
+  }
+
+  return worktrees.map(worktree => {
+    if (worktree.session_type === 'base') {
+      return { ...worktree, order: 0 }
+    }
+
+    const order = orderById.get(worktree.id) ?? worktree.order
+    return { ...worktree, order }
+  })
+}
+
+/**
  * Hook to reorder worktrees within a project
  */
 interface ReorderWorktreesInput {
@@ -3326,29 +3356,9 @@ export function useReorderWorktrees() {
 
       // Optimistically update the cache
       if (previousWorktrees) {
-        const worktreeById = new Map(previousWorktrees.map(w => [w.id, w]))
-        const orderById = new Map<string, number>()
-        let nextOrder = 1
-        for (const worktreeId of worktreeIds) {
-          const worktree = worktreeById.get(worktreeId)
-          if (worktree && worktree.session_type !== 'base') {
-            orderById.set(worktreeId, nextOrder)
-            nextOrder += 1
-          }
-        }
-
-        const reorderedWorktrees = previousWorktrees.map(worktree => {
-          if (worktree.session_type === 'base') {
-            return { ...worktree, order: 0 }
-          }
-
-          const order = orderById.get(worktree.id) ?? worktree.order
-          return { ...worktree, order }
-        })
-
         queryClient.setQueryData<Worktree[]>(
           projectsQueryKeys.worktrees(projectId),
-          reorderedWorktrees
+          withWorktreeOrder(previousWorktrees, worktreeIds)
         )
       }
 
@@ -3396,6 +3406,355 @@ export function useReorderWorktrees() {
       queryClient.invalidateQueries({
         queryKey: projectsQueryKeys.worktrees(projectId),
       })
+    },
+  })
+}
+
+// ============================================================================
+// Worktree Groups
+// ============================================================================
+
+/** Shared by every worktree group mutation, for `useIsMutating`. */
+export const WORKTREE_GROUP_MUTATION_KEY = ['worktree-group-mutation'] as const
+
+const MULTI_SERVER_PROJECTS_KEY = ['multi-server', 'projects'] as const
+
+type WorktreeGroupsUpdate = (groups: WorktreeGroup[]) => WorktreeGroup[]
+
+/**
+ * Apply `update` to one project's groups in both project list caches: the
+ * local list (raw ids) and the native multi-server list (client `key`).
+ */
+function updateProjectGroupsInCaches(
+  queryClient: QueryClient,
+  projectId: string,
+  update: WorktreeGroupsUpdate
+): void {
+  const apply = <T extends Project>(project: T): T => ({
+    ...project,
+    worktree_groups: update(project.worktree_groups ?? []),
+  })
+  queryClient.setQueryData<Project[]>(projectsQueryKeys.list(), old =>
+    old?.map(p => (p.id === projectId ? apply(p) : p))
+  )
+  queryClient.setQueriesData<MultiServerProject[]>(
+    { queryKey: MULTI_SERVER_PROJECTS_KEY },
+    old => old?.map(p => (p.key === projectId ? apply(p) : p))
+  )
+}
+
+interface ProjectListSnapshot {
+  list: Project[] | undefined
+  multiServer: [readonly unknown[], MultiServerProject[] | undefined][]
+}
+
+async function snapshotProjectLists(
+  queryClient: QueryClient
+): Promise<ProjectListSnapshot> {
+  await Promise.all([
+    queryClient.cancelQueries({ queryKey: projectsQueryKeys.list() }),
+    queryClient.cancelQueries({ queryKey: MULTI_SERVER_PROJECTS_KEY }),
+  ])
+  return {
+    list: queryClient.getQueryData<Project[]>(projectsQueryKeys.list()),
+    multiServer: queryClient.getQueriesData<MultiServerProject[]>({
+      queryKey: MULTI_SERVER_PROJECTS_KEY,
+    }),
+  }
+}
+
+function restoreProjectLists(
+  queryClient: QueryClient,
+  snapshot: ProjectListSnapshot
+): void {
+  queryClient.setQueryData(projectsQueryKeys.list(), snapshot.list)
+  for (const [queryKey, data] of snapshot.multiServer) {
+    queryClient.setQueryData(queryKey, data)
+  }
+}
+
+function upsertGroup(group: WorktreeGroup): WorktreeGroupsUpdate {
+  return groups =>
+    groups.some(g => g.id === group.id)
+      ? groups.map(g => (g.id === group.id ? group : g))
+      : [...groups, group]
+}
+
+function invalidateWorktreeGroupCaches(
+  queryClient: QueryClient,
+  projectId: string
+): void {
+  invalidateProjectLists(queryClient)
+  queryClient.invalidateQueries({
+    queryKey: projectsQueryKeys.worktrees(projectId),
+  })
+}
+
+function worktreeGroupError(action: string, error: unknown): void {
+  logger.error(`Failed to ${action}`, { error })
+  toast.error(`Failed to ${action}`, { description: errorMessage(error) })
+}
+
+/** Create a group. Not optimistic: the backend picks the id and final name. */
+export function useCreateWorktreeGroup() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationKey: WORKTREE_GROUP_MUTATION_KEY,
+    mutationFn: async ({
+      projectId,
+      name,
+    }: {
+      projectId: string
+      name: string
+    }): Promise<WorktreeGroup> => {
+      if (!isTauri()) {
+        throw new Error('Not in Tauri context')
+      }
+      return invoke<WorktreeGroup>('create_worktree_group', {
+        projectId,
+        name,
+      })
+    },
+    onSuccess: (group, { projectId }) => {
+      updateProjectGroupsInCaches(queryClient, projectId, upsertGroup(group))
+    },
+    onError: error => worktreeGroupError('create group', error),
+    onSettled: () => {
+      invalidateProjectLists(queryClient)
+    },
+  })
+}
+
+/** Rename a group. Not optimistic: the backend may add a " (n)" suffix. */
+export function useRenameWorktreeGroup() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationKey: WORKTREE_GROUP_MUTATION_KEY,
+    mutationFn: async ({
+      projectId,
+      groupId,
+      name,
+    }: {
+      projectId: string
+      groupId: string
+      name: string
+    }): Promise<WorktreeGroup> => {
+      if (!isTauri()) {
+        throw new Error('Not in Tauri context')
+      }
+      return invoke<WorktreeGroup>('rename_worktree_group', {
+        projectId,
+        groupId,
+        name,
+      })
+    },
+    onSuccess: (group, { projectId }) => {
+      updateProjectGroupsInCaches(queryClient, projectId, upsertGroup(group))
+    },
+    onError: error => worktreeGroupError('rename group', error),
+    onSettled: () => {
+      invalidateProjectLists(queryClient)
+    },
+  })
+}
+
+/** Delete a group. Its worktrees become ungrouped. */
+export function useDeleteWorktreeGroup() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationKey: WORKTREE_GROUP_MUTATION_KEY,
+    mutationFn: async ({
+      projectId,
+      groupId,
+    }: {
+      projectId: string
+      groupId: string
+    }): Promise<void> => {
+      if (!isTauri()) {
+        throw new Error('Not in Tauri context')
+      }
+      await invoke('delete_worktree_group', { projectId, groupId })
+    },
+    onMutate: async ({ projectId, groupId }) => {
+      const worktreesKey = projectsQueryKeys.worktrees(projectId)
+      const [projectLists] = await Promise.all([
+        snapshotProjectLists(queryClient),
+        queryClient.cancelQueries({ queryKey: worktreesKey }),
+      ])
+      const previousWorktrees =
+        queryClient.getQueryData<Worktree[]>(worktreesKey)
+
+      updateProjectGroupsInCaches(queryClient, projectId, groups =>
+        groups.filter(g => g.id !== groupId)
+      )
+      if (previousWorktrees) {
+        queryClient.setQueryData<Worktree[]>(
+          worktreesKey,
+          previousWorktrees.map(w =>
+            w.group_id === groupId ? { ...w, group_id: null } : w
+          )
+        )
+      }
+      return { projectLists, previousWorktrees }
+    },
+    onError: (error, { projectId }, context) => {
+      if (context) {
+        restoreProjectLists(queryClient, context.projectLists)
+        if (context.previousWorktrees) {
+          queryClient.setQueryData(
+            projectsQueryKeys.worktrees(projectId),
+            context.previousWorktrees
+          )
+        }
+      }
+      worktreeGroupError('delete group', error)
+    },
+    onSettled: (_, __, { projectId }) => {
+      invalidateWorktreeGroupCaches(queryClient, projectId)
+    },
+  })
+}
+
+/**
+ * Groups ordered by `groupIds` (order = index, duplicates ignored), unlisted
+ * groups after them in their current order, like `reorder_worktree_groups`.
+ */
+function withGroupOrder(
+  groups: WorktreeGroup[],
+  groupIds: readonly string[]
+): WorktreeGroup[] {
+  const listed = [...new Set(groupIds)]
+  const orderById = new Map(listed.map((id, index) => [id, index]))
+  const unlisted = groups
+    .filter(g => !orderById.has(g.id))
+    .sort((a, b) => a.order - b.order)
+  unlisted.forEach((g, index) => orderById.set(g.id, listed.length + index))
+  return groups.map(g => ({ ...g, order: orderById.get(g.id) ?? g.order }))
+}
+
+/** Reorder a project's groups. */
+export function useReorderWorktreeGroups() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationKey: WORKTREE_GROUP_MUTATION_KEY,
+    mutationFn: async ({
+      projectId,
+      groupIds,
+    }: {
+      projectId: string
+      groupIds: string[]
+    }): Promise<void> => {
+      if (!isTauri()) {
+        throw new Error('Not in Tauri context')
+      }
+      await invoke('reorder_worktree_groups', { projectId, groupIds })
+    },
+    onMutate: async ({ projectId, groupIds }) => {
+      const projectLists = await snapshotProjectLists(queryClient)
+      updateProjectGroupsInCaches(queryClient, projectId, groups =>
+        withGroupOrder(groups, groupIds)
+      )
+      return { projectLists }
+    },
+    onError: (error, _, context) => {
+      if (context) restoreProjectLists(queryClient, context.projectLists)
+      worktreeGroupError('reorder groups', error)
+    },
+    onSettled: (_, __, { projectId }) => {
+      invalidateWorktreeGroupCaches(queryClient, projectId)
+    },
+  })
+}
+
+interface MoveWorktreeToGroupInput {
+  projectId: string
+  worktreeId: string
+  /** Target group, or null for ungrouped */
+  groupId: string | null
+  /** Full new manual order of the project's worktrees (optional) */
+  worktreeIds?: string[]
+  switchToManualSort?: boolean
+}
+
+/** Move a worktree to a group (or out of groups), optionally with a new order. */
+export function useMoveWorktreeToGroup() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationKey: WORKTREE_GROUP_MUTATION_KEY,
+    mutationFn: async ({
+      projectId,
+      worktreeId,
+      groupId,
+      worktreeIds,
+    }: MoveWorktreeToGroupInput): Promise<void> => {
+      if (!isTauri()) {
+        throw new Error('Not in Tauri context')
+      }
+      await invoke('move_worktree_to_group', {
+        projectId,
+        worktreeId,
+        groupId,
+        ...(worktreeIds ? { worktreeIds } : {}),
+      })
+    },
+    onMutate: async ({
+      projectId,
+      worktreeId,
+      groupId,
+      worktreeIds,
+      switchToManualSort,
+    }) => {
+      const worktreesKey = projectsQueryKeys.worktrees(projectId)
+      await queryClient.cancelQueries({ queryKey: worktreesKey })
+      const previousWorktrees =
+        queryClient.getQueryData<Worktree[]>(worktreesKey)
+
+      if (previousWorktrees) {
+        const moved = previousWorktrees.map(w =>
+          w.id === worktreeId ? { ...w, group_id: groupId } : w
+        )
+        queryClient.setQueryData<Worktree[]>(
+          worktreesKey,
+          worktreeIds ? withWorktreeOrder(moved, worktreeIds) : moved
+        )
+      }
+
+      const previousSortMode =
+        useProjectsStore.getState().projectCanvasSettings[projectId]
+          ?.worktreeSortMode
+      if (switchToManualSort && previousSortMode !== 'manual') {
+        useProjectsStore
+          .getState()
+          .setProjectCanvasWorktreeSortMode(projectId, 'manual')
+      }
+
+      return { previousWorktrees, previousSortMode }
+    },
+    onError: (error, { projectId }, context) => {
+      if (context?.previousWorktrees) {
+        queryClient.setQueryData(
+          projectsQueryKeys.worktrees(projectId),
+          context.previousWorktrees
+        )
+      }
+      if (
+        context?.previousSortMode != null &&
+        useProjectsStore.getState().projectCanvasSettings[projectId]
+          ?.worktreeSortMode === 'manual'
+      ) {
+        useProjectsStore
+          .getState()
+          .setProjectCanvasWorktreeSortMode(projectId, context.previousSortMode)
+      }
+      worktreeGroupError('move worktree', error)
+    },
+    onSettled: (_, __, { projectId }) => {
+      invalidateWorktreeGroupCaches(queryClient, projectId)
     },
   })
 }

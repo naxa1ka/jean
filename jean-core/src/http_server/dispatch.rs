@@ -4318,6 +4318,75 @@ pub async fn dispatch_command(
         muse_command if MUSE_CLI_COMMANDS.contains(&muse_command) => {
             Box::pin(dispatch_muse_cli_command(app, muse_command, &args)).await
         }
+        wg if WORKTREE_GROUP_COMMANDS.contains(&wg) => {
+            Box::pin(dispatch_worktree_group_command(app, wg, &args)).await
+        }
+        _ => Err(format!("Unknown command: {command}")),
+    }
+}
+
+const WORKTREE_GROUP_COMMANDS: &[&str] = &[
+    "create_worktree_group",
+    "rename_worktree_group",
+    "delete_worktree_group",
+    "reorder_worktree_groups",
+    "move_worktree_to_group",
+];
+
+async fn dispatch_worktree_group_command(
+    app: &AppHandle,
+    command: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    match command {
+        "create_worktree_group" => {
+            let project_id: String = field(args, "projectId", "project_id")?;
+            let name: String = from_field(args, "name")?;
+            let result =
+                crate::projects::create_worktree_group(app.clone(), project_id, name).await?;
+            emit_cache_invalidation(app, &["projects"]);
+            to_value(result)
+        }
+        "rename_worktree_group" => {
+            let project_id: String = field(args, "projectId", "project_id")?;
+            let group_id: String = field(args, "groupId", "group_id")?;
+            let name: String = from_field(args, "name")?;
+            let result =
+                crate::projects::rename_worktree_group(app.clone(), project_id, group_id, name)
+                    .await?;
+            emit_cache_invalidation(app, &["projects"]);
+            to_value(result)
+        }
+        "delete_worktree_group" => {
+            let project_id: String = field(args, "projectId", "project_id")?;
+            let group_id: String = field(args, "groupId", "group_id")?;
+            crate::projects::delete_worktree_group(app.clone(), project_id, group_id).await?;
+            emit_cache_invalidation(app, &["projects"]);
+            Ok(Value::Null)
+        }
+        "reorder_worktree_groups" => {
+            let project_id: String = field(args, "projectId", "project_id")?;
+            let group_ids: Vec<String> = field(args, "groupIds", "group_ids")?;
+            crate::projects::reorder_worktree_groups(app.clone(), project_id, group_ids).await?;
+            emit_cache_invalidation(app, &["projects"]);
+            Ok(Value::Null)
+        }
+        "move_worktree_to_group" => {
+            let project_id: String = field(args, "projectId", "project_id")?;
+            let worktree_id: String = field(args, "worktreeId", "worktree_id")?;
+            let group_id: Option<String> = field_opt(args, "groupId", "group_id")?;
+            let worktree_ids: Option<Vec<String>> = field_opt(args, "worktreeIds", "worktree_ids")?;
+            crate::projects::move_worktree_to_group(
+                app.clone(),
+                project_id,
+                worktree_id,
+                group_id,
+                worktree_ids,
+            )
+            .await?;
+            emit_cache_invalidation(app, &["projects"]);
+            Ok(Value::Null)
+        }
         _ => Err(format!("Unknown command: {command}")),
     }
 }
