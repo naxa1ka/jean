@@ -13,7 +13,8 @@ interface MoveToGroupMenuItemsProps {
   /** The worktree's effective group (null = ungrouped) */
   currentGroupId: string | null
   onMove: (groupId: string | null) => void
-  onMoveToNewGroup: () => void
+  /** Omit to hide "New group…" (menus with no rename field nearby) */
+  onMoveToNewGroup?: () => void
 }
 
 /** "Move to group ▸" submenu for a worktree context menu. */
@@ -54,11 +55,15 @@ export function MoveToGroupMenuItems({
             No group
           </ContextMenuItem>
         )}
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={onMoveToNewGroup}>
-          <FolderPlus className="mr-2 h-4 w-4" />
-          New group…
-        </ContextMenuItem>
+        {onMoveToNewGroup && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={onMoveToNewGroup}>
+              <FolderPlus className="mr-2 h-4 w-4" />
+              New group…
+            </ContextMenuItem>
+          </>
+        )}
       </ContextMenuSubContent>
     </ContextMenuSub>
   )
