@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { test, expect } from '../fixtures/tauri-mock'
 import { project, worktree1, worktree2 } from '../fixtures/invoke-handlers'
 import { createWorktree } from '../fixtures/mock-data'
@@ -47,6 +47,30 @@ async function canvasOrder(page: Page) {
           : (el.dataset.pdndWorktreeId ?? '')
       })
     )
+}
+
+async function drag(
+  page: Page,
+  source: Locator,
+  target: Locator,
+  yRatio = 0.5
+) {
+  const sourceBox = await source.boundingBox()
+  const targetBox = await target.boundingBox()
+  expect(sourceBox).not.toBeNull()
+  expect(targetBox).not.toBeNull()
+  if (!sourceBox || !targetBox) return
+  const startX = sourceBox.x + sourceBox.width / 2
+  const startY = sourceBox.y + sourceBox.height / 2
+  await page.mouse.move(startX, startY)
+  await page.mouse.down()
+  await page.mouse.move(startX, startY + 12, { steps: 4 })
+  await page.mouse.move(
+    targetBox.x + targetBox.width / 2,
+    targetBox.y + targetBox.height * yRatio,
+    { steps: 12 }
+  )
+  await page.mouse.up()
 }
 
 test.describe('Worktree groups on the project canvas', () => {
@@ -127,4 +151,49 @@ test.describe('Worktree groups on the project canvas', () => {
       }
     })
   }
+
+  test('desktop web: drags rows between groups and reorders groups', async ({
+    mockPage,
+  }) => {
+    await mockPage.setViewportSize({ width: 1280, height: 900 })
+    await expect(canvasHeader(mockPage, groupA.id)).toBeVisible({
+      timeout: 10000,
+    })
+
+    // 1. Ungrouped row (from its grip) onto the Alpha header -> end of Alpha
+    await canvasRow(mockPage, worktree3.id).hover()
+    const grip = mockPage
+      .locator(CANVAS_LIST)
+      .getByRole('button', { name: `Reorder ${worktree3.name}` })
+    await expect(grip).toBeVisible()
+    await drag(mockPage, grip, canvasHeader(mockPage, groupA.id))
+    await expect
+      .poll(() => canvasOrder(mockPage))
+      .toEqual([
+        `group:${groupA.id}`,
+        worktree1.id,
+        worktree3.id,
+        `group:${groupB.id}`,
+        worktree2.id,
+        'group:ungrouped',
+      ])
+
+    // 2. Beta header above the Alpha header
+    await drag(
+      mockPage,
+      canvasHeader(mockPage, groupB.id),
+      canvasHeader(mockPage, groupA.id),
+      0.2
+    )
+    await expect
+      .poll(() => canvasOrder(mockPage))
+      .toEqual([
+        `group:${groupB.id}`,
+        worktree2.id,
+        `group:${groupA.id}`,
+        worktree1.id,
+        worktree3.id,
+        'group:ungrouped',
+      ])
+  })
 })

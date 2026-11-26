@@ -4,7 +4,6 @@ import {
   canGroupWorktree,
   effectiveGroupId,
   groupWorktrees,
-  isSameWorktreeGroup,
   orderForMoveToGroupEnd,
   persistedWorktreeOrder,
 } from './worktree-groups'
@@ -188,32 +187,5 @@ describe('persistedWorktreeOrder', () => {
         worktree('fix', { order: 0, origin: 'auto_fix' }),
       ])
     ).toEqual(['base', 'a', 'b'])
-  })
-})
-
-describe('isSameWorktreeGroup', () => {
-  const byId = new Map(
-    [
-      worktree('a', { group_id: 'g1' }),
-      worktree('b', { group_id: 'g1' }),
-      worktree('c', { group_id: 'g2' }),
-      worktree('d'),
-      worktree('e', { group_id: 'missing' }),
-    ].map(w => [w.id, w])
-  )
-
-  it('matches members of one group and ungrouped worktrees', () => {
-    expect(isSameWorktreeGroup('a', 'b', byId, groups)).toBe(true)
-    expect(isSameWorktreeGroup('d', 'e', byId, groups)).toBe(true)
-  })
-
-  it('rejects other groups and unknown ids', () => {
-    expect(isSameWorktreeGroup('a', 'c', byId, groups)).toBe(false)
-    expect(isSameWorktreeGroup('a', 'd', byId, groups)).toBe(false)
-    expect(isSameWorktreeGroup('a', 'zzz', byId, groups)).toBe(false)
-  })
-
-  it('treats every worktree as one bucket without groups', () => {
-    expect(isSameWorktreeGroup('a', 'c', byId, [])).toBe(true)
   })
 })
