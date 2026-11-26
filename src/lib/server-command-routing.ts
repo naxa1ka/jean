@@ -20,6 +20,8 @@ export const ROUTED_ARGUMENT_KEYS: ReadonlySet<string> = new Set([
   'folder_id',
   'itemIds',
   'item_ids',
+  'worktreeIds',
+  'worktree_ids',
   'newParentId',
   'new_parent_id',
   'parentId',

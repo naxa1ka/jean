@@ -288,6 +288,41 @@ describe('server command routing', () => {
     })
   })
 
+  it('routes remote worktree reorders and strips every worktree id', () => {
+    expect(
+      routeServerCommand('reorder_worktrees', {
+        projectId: 'remote:p1',
+        worktreeIds: ['remote:w1', 'remote:w2'],
+      })
+    ).toEqual([
+      {
+        serverId: 'remote',
+        args: { projectId: 'p1', worktreeIds: ['w1', 'w2'] },
+      },
+    ])
+  })
+
+  it('routes a remote move to a group and keeps the raw group id', () => {
+    expect(
+      routeServerCommand('move_worktree_to_group', {
+        projectId: 'remote:p1',
+        worktreeId: 'remote:w2',
+        groupId: 'g1',
+        worktreeIds: ['remote:w2', 'remote:w1'],
+      })
+    ).toEqual([
+      {
+        serverId: 'remote',
+        args: {
+          projectId: 'p1',
+          worktreeId: 'w2',
+          groupId: 'g1',
+          worktreeIds: ['w2', 'w1'],
+        },
+      },
+    ])
+  })
+
   it('routes remote folder commands and strips the folder id', () => {
     expect(
       resolveServerCommand({ folderId: 'remote:folder', name: 'Renamed' })

@@ -197,6 +197,16 @@ export interface Project {
   has_base_session?: boolean
   /** SSH target when this project is a managed server */
   server?: ProjectServer | null
+  /** Named groups of this project's worktrees (empty/undefined = no groups) */
+  worktree_groups?: WorktreeGroup[]
+}
+
+/** A named group of worktrees inside one project. Ids are raw UUIDs, never server-scoped. */
+export interface WorktreeGroup {
+  id: string
+  name: string
+  /** Display order among the project's groups (lower = higher) */
+  order: number
 }
 
 export function isServerProject(project: Project): boolean {
@@ -359,6 +369,8 @@ export interface Worktree {
   order: number
   /** Origin/category for this worktree */
   origin?: WorktreeOrigin
+  /** Worktree group this worktree belongs to (unknown id = ungrouped) */
+  group_id?: string | null
   /** Unix timestamp when the worktree was deleted (undefined = live) */
   archived_at?: number
   /** Unix timestamp when worktree was last opened/viewed by the user */

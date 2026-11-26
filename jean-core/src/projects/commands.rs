@@ -51,8 +51,8 @@ use super::types::{
     JeanConfig, MergeType, Project, ProjectAutoFixSettings, ProjectListItem, SessionType, Worktree,
     WorktreeArchivedEvent, WorktreeBranchExistsEvent, WorktreeCreateErrorEvent,
     WorktreeCreatedEvent, WorktreeCreatingEvent, WorktreeDeleteErrorEvent, WorktreeDeletedEvent,
-    WorktreeDeletingEvent, WorktreeOrigin, WorktreePathExistsEvent, WorktreeSetupCompleteEvent,
-    WorktreeUnarchivedEvent,
+    WorktreeDeletingEvent, WorktreeGroup, WorktreeOrigin, WorktreePathExistsEvent,
+    WorktreeSetupCompleteEvent, WorktreeUnarchivedEvent,
 };
 use super::unmanaged_worktrees::{
     blocked_import_paths, list_unmanaged_from_repo, main_checkout_path_from_porcelain,
@@ -795,6 +795,7 @@ pub async fn add_project(
         added_at: now(),
         order: max_order,
         parent_id,
+        worktree_groups: Vec::new(),
         is_folder: false,
         avatar_path: None,
         default_avatar_path: None,
@@ -960,6 +961,7 @@ pub async fn init_project(
         added_at: now(),
         order: max_order,
         parent_id,
+        worktree_groups: Vec::new(),
         is_folder: false,
         avatar_path: None,
         default_avatar_path: None,
@@ -1023,6 +1025,7 @@ pub async fn clone_project(
         added_at: now(),
         order: max_order,
         parent_id,
+        worktree_groups: Vec::new(),
         is_folder: false,
         avatar_path: None,
         default_avatar_path: None,
@@ -2145,6 +2148,7 @@ pub async fn create_worktree(
         origin: worktree_origin.clone(),
         archived_at: None,
         labels: Vec::new(),
+        group_id: None,
         label: None,
         last_opened_at: None,
     };
@@ -2883,6 +2887,7 @@ pub async fn create_worktree(
                     origin: worktree_origin_clone.clone(),
                     archived_at: None,
                     labels: Vec::new(),
+                    group_id: None,
                     label: None,
                     last_opened_at: None,
                 };
@@ -3149,6 +3154,7 @@ pub async fn fork_session_to_worktree(
         origin: Some(WorktreeOrigin::Manual),
         archived_at: None,
         labels: source_worktree.labels.clone(),
+        group_id: forked_worktree_group_id(&source_worktree),
         label: source_worktree.label.clone(),
         last_opened_at: Some(created_at),
     };
@@ -3335,6 +3341,7 @@ pub async fn create_worktree_from_existing_branch(
         origin: None,
         archived_at: None,
         labels: Vec::new(),
+        group_id: None,
         label: None,
         last_opened_at: None,
     };
@@ -3740,6 +3747,7 @@ pub async fn create_worktree_from_existing_branch(
                     origin: None,
                     archived_at: None,
                     labels: Vec::new(),
+                    group_id: None,
                     label: None,
                     last_opened_at: None,
                 };
@@ -3995,6 +4003,7 @@ pub async fn checkout_pr(
         origin: None,
         archived_at: None,
         labels: Vec::new(),
+        group_id: None,
         label: None,
         last_opened_at: None,
     };
@@ -4320,6 +4329,7 @@ pub async fn checkout_pr(
                     origin: None,
                     archived_at: None,
                     labels: Vec::new(),
+                    group_id: None,
                     label: None,
                     last_opened_at: None,
                 };
@@ -4844,6 +4854,7 @@ pub async fn import_worktree(
         origin: None,
         archived_at: None,
         labels: Vec::new(),
+        group_id: None,
         label: None,
         last_opened_at: None,
     };
@@ -7533,11 +7544,11 @@ pub async fn update_worktree_cached_status(
 ) -> Result<bool, String> {
     log::trace!("Updating cached status for worktree {worktree_id}");
 
-    let mut data = load_projects_data(&app)?;
+    let data = load_projects_data(&app)?;
 
     let worktree = data
         .worktrees
-        .iter_mut()
+        .iter()
         .find(|w| w.id == worktree_id)
         .ok_or_else(|| format!("Worktree not found: {worktree_id}"))?;
 
@@ -7580,61 +7591,69 @@ pub async fn update_worktree_cached_status(
         return Ok(false);
     }
 
-    // Only update fields that are provided, preserve existing values for None
-    if let Some(ref b) = branch {
-        worktree.branch = b.clone();
-        // For base sessions, also update the display name to match the branch
-        if worktree.session_type == crate::projects::types::SessionType::Base {
-            worktree.name = b.clone();
+    // Atomic write: a group or order change that lands between the read above
+    // and this write must not be lost.
+    with_projects_data_mut(&app, |data| {
+        let worktree = data
+            .worktrees
+            .iter_mut()
+            .find(|w| w.id == worktree_id)
+            .ok_or_else(|| format!("Worktree not found: {worktree_id}"))?;
+        // Only update fields that are provided, preserve existing values for None
+        if let Some(ref b) = branch {
+            worktree.branch = b.clone();
+            // For base sessions, also update the display name to match the branch
+            if worktree.session_type == crate::projects::types::SessionType::Base {
+                worktree.name = b.clone();
+            }
         }
-    }
-    if pr_status.is_some() {
-        worktree.cached_pr_status = pr_status;
-    }
-    if check_status.is_some() {
-        worktree.cached_check_status = check_status;
-    }
-    if behind_count.is_some() {
-        worktree.cached_behind_count = behind_count;
-    }
-    if ahead_count.is_some() {
-        worktree.cached_ahead_count = ahead_count;
-    }
-    if uncommitted_added.is_some() {
-        worktree.cached_uncommitted_added = uncommitted_added;
-    }
-    if uncommitted_removed.is_some() {
-        worktree.cached_uncommitted_removed = uncommitted_removed;
-    }
-    if branch_diff_added.is_some() {
-        worktree.cached_branch_diff_added = branch_diff_added;
-    }
-    if branch_diff_removed.is_some() {
-        worktree.cached_branch_diff_removed = branch_diff_removed;
-    }
-    if base_branch_ahead_count.is_some() {
-        worktree.cached_base_branch_ahead_count = base_branch_ahead_count;
-    }
-    if base_branch_behind_count.is_some() {
-        worktree.cached_base_branch_behind_count = base_branch_behind_count;
-    }
-    if worktree_ahead_count.is_some() {
-        worktree.cached_worktree_ahead_count = worktree_ahead_count;
-    }
-    if unpushed_count.is_some() {
-        worktree.cached_unpushed_count = unpushed_count;
-    }
-    if base_branch.is_some() {
-        worktree.base_branch = base_branch;
-    }
-    worktree.cached_status_at = Some(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-    );
-
-    save_projects_data(&app, &data)?;
+        if pr_status.is_some() {
+            worktree.cached_pr_status = pr_status;
+        }
+        if check_status.is_some() {
+            worktree.cached_check_status = check_status;
+        }
+        if behind_count.is_some() {
+            worktree.cached_behind_count = behind_count;
+        }
+        if ahead_count.is_some() {
+            worktree.cached_ahead_count = ahead_count;
+        }
+        if uncommitted_added.is_some() {
+            worktree.cached_uncommitted_added = uncommitted_added;
+        }
+        if uncommitted_removed.is_some() {
+            worktree.cached_uncommitted_removed = uncommitted_removed;
+        }
+        if branch_diff_added.is_some() {
+            worktree.cached_branch_diff_added = branch_diff_added;
+        }
+        if branch_diff_removed.is_some() {
+            worktree.cached_branch_diff_removed = branch_diff_removed;
+        }
+        if base_branch_ahead_count.is_some() {
+            worktree.cached_base_branch_ahead_count = base_branch_ahead_count;
+        }
+        if base_branch_behind_count.is_some() {
+            worktree.cached_base_branch_behind_count = base_branch_behind_count;
+        }
+        if worktree_ahead_count.is_some() {
+            worktree.cached_worktree_ahead_count = worktree_ahead_count;
+        }
+        if unpushed_count.is_some() {
+            worktree.cached_unpushed_count = unpushed_count;
+        }
+        if base_branch.is_some() {
+            worktree.base_branch = base_branch;
+        }
+        worktree.cached_status_at = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        );
+        Ok(())
+    })?;
 
     Ok(true)
 }
@@ -7780,33 +7799,232 @@ pub async fn reorder_worktrees(
     project_id: String,
     worktree_ids: Vec<String>,
 ) -> Result<(), String> {
-    log::trace!(
-        "Reordering worktrees for project {}: {:?}",
-        project_id,
-        worktree_ids
-    );
+    log::trace!("Reordering worktrees for project {project_id}: {worktree_ids:?}");
 
-    let mut data = load_projects_data(&app)?;
+    with_projects_data_mut(&app, |data| {
+        apply_worktree_order(data, &project_id, &worktree_ids);
+        Ok(())
+    })?;
+    log::trace!("Worktrees reordered successfully for project {project_id}");
+    Ok(())
+}
 
-    // Update order based on position in the provided array.
-    // Base sessions always stay at order 0 and do not consume an order slot.
+/// Write `order` 1..n in array order for the project's worktrees.
+/// Base sessions always stay at order 0 and do not consume an order slot.
+/// Ids that are unknown or belong to another project are skipped.
+fn apply_worktree_order(
+    data: &mut super::types::ProjectsData,
+    project_id: &str,
+    worktree_ids: &[String],
+) {
     let mut next_order = 1_u32;
-    for worktree_id in worktree_ids.iter() {
-        if let Some(worktree) = data.worktrees.iter_mut().find(|w| w.id == *worktree_id) {
-            // Skip base sessions - they always stay at order 0
+    for worktree_id in worktree_ids {
+        if let Some(worktree) = data
+            .worktrees
+            .iter_mut()
+            .find(|w| w.id == *worktree_id && w.project_id == project_id)
+        {
             if worktree.session_type != SessionType::Base {
                 worktree.order = next_order;
                 next_order += 1;
             }
         }
     }
+}
 
-    save_projects_data(&app, &data)?;
-    log::trace!(
-        "Worktrees reordered successfully for project {}",
-        project_id
-    );
-    Ok(())
+// =============================================================================
+// Worktree Groups
+// =============================================================================
+
+const WORKTREE_GROUP_NAME_MAX_CHARS: usize = 60;
+
+/// A forked worktree keeps the group of its source worktree.
+fn forked_worktree_group_id(source: &Worktree) -> Option<String> {
+    source.group_id.clone()
+}
+
+fn normalize_worktree_group_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Group name cannot be empty".to_string());
+    }
+    if trimmed.chars().count() > WORKTREE_GROUP_NAME_MAX_CHARS {
+        return Err(format!(
+            "Group name cannot be longer than {WORKTREE_GROUP_NAME_MAX_CHARS} characters"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Case-insensitive dedupe to "Name (2)", "Name (3)", ... ignoring `ignore_id`.
+fn unique_worktree_group_name(
+    groups: &[WorktreeGroup],
+    name: &str,
+    ignore_id: Option<&str>,
+) -> String {
+    let taken = |candidate: &str| {
+        let candidate = candidate.to_lowercase();
+        groups
+            .iter()
+            .any(|g| Some(g.id.as_str()) != ignore_id && g.name.to_lowercase() == candidate)
+    };
+    if !taken(name) {
+        return name.to_string();
+    }
+    let mut counter = 2;
+    loop {
+        let candidate = format!("{name} ({counter})");
+        if !taken(&candidate) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+fn worktree_group_project_mut<'a>(
+    data: &'a mut super::types::ProjectsData,
+    project_id: &str,
+) -> Result<&'a mut Project, String> {
+    let project = data
+        .find_project_mut(project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    if project.is_folder {
+        return Err("Folders cannot have worktree groups".to_string());
+    }
+    Ok(project)
+}
+
+/// Create a worktree group at the end of the project's group list
+pub async fn create_worktree_group(
+    app: AppHandle,
+    project_id: String,
+    name: String,
+) -> Result<WorktreeGroup, String> {
+    let name = normalize_worktree_group_name(&name)?;
+    with_projects_data_mut(&app, |data| {
+        let project = worktree_group_project_mut(data, &project_id)?;
+        let order = project
+            .worktree_groups
+            .iter()
+            .map(|g| g.order + 1)
+            .max()
+            .unwrap_or(0);
+        let group = WorktreeGroup {
+            id: Uuid::new_v4().to_string(),
+            name: unique_worktree_group_name(&project.worktree_groups, &name, None),
+            order,
+        };
+        project.worktree_groups.push(group.clone());
+        Ok(group)
+    })
+}
+
+/// Rename a worktree group (duplicate names get a " (n)" suffix)
+pub async fn rename_worktree_group(
+    app: AppHandle,
+    project_id: String,
+    group_id: String,
+    name: String,
+) -> Result<WorktreeGroup, String> {
+    let name = normalize_worktree_group_name(&name)?;
+    with_projects_data_mut(&app, |data| {
+        let project = worktree_group_project_mut(data, &project_id)?;
+        let unique_name =
+            unique_worktree_group_name(&project.worktree_groups, &name, Some(&group_id));
+        let group = project
+            .worktree_groups
+            .iter_mut()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| format!("Worktree group not found: {group_id}"))?;
+        group.name = unique_name;
+        Ok(group.clone())
+    })
+}
+
+/// Delete a worktree group. Its worktrees become ungrouped. A missing group is Ok.
+pub async fn delete_worktree_group(
+    app: AppHandle,
+    project_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    with_projects_data_mut(&app, |data| {
+        let project = worktree_group_project_mut(data, &project_id)?;
+        project.worktree_groups.retain(|g| g.id != group_id);
+        for worktree in data
+            .worktrees
+            .iter_mut()
+            .filter(|w| w.project_id == project_id)
+        {
+            if worktree.group_id.as_deref() == Some(group_id.as_str()) {
+                worktree.group_id = None;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Reorder worktree groups. `order` = index in the de-duplicated array;
+/// unlisted groups keep their relative order after the listed ones.
+pub async fn reorder_worktree_groups(
+    app: AppHandle,
+    project_id: String,
+    group_ids: Vec<String>,
+) -> Result<(), String> {
+    with_projects_data_mut(&app, |data| {
+        let project = worktree_group_project_mut(data, &project_id)?;
+        let mut listed: Vec<&str> = Vec::new();
+        for id in &group_ids {
+            if !project.worktree_groups.iter().any(|g| g.id == *id) {
+                return Err(format!("Worktree group not found: {id}"));
+            }
+            if !listed.contains(&id.as_str()) {
+                listed.push(id);
+            }
+        }
+        project.worktree_groups.sort_by_key(|g| {
+            let position = listed.iter().position(|id| *id == g.id);
+            (position.unwrap_or(usize::MAX), g.order)
+        });
+        for (index, group) in project.worktree_groups.iter_mut().enumerate() {
+            group.order = index as u32;
+        }
+        Ok(())
+    })
+}
+
+/// Move a worktree to a group (None = ungrouped). When `worktree_ids` is given,
+/// also writes the worktree order like `reorder_worktrees`, in the same write.
+pub async fn move_worktree_to_group(
+    app: AppHandle,
+    project_id: String,
+    worktree_id: String,
+    group_id: Option<String>,
+    worktree_ids: Option<Vec<String>>,
+) -> Result<(), String> {
+    with_projects_data_mut(&app, |data| {
+        let project = worktree_group_project_mut(data, &project_id)?;
+        if let Some(gid) = &group_id {
+            if !project.worktree_groups.iter().any(|g| g.id == *gid) {
+                return Err(format!("Worktree group not found: {gid}"));
+            }
+        }
+        let worktree = data
+            .worktrees
+            .iter_mut()
+            .find(|w| w.id == worktree_id && w.project_id == project_id)
+            .ok_or_else(|| format!("Worktree not found in project: {worktree_id}"))?;
+        if worktree.session_type == SessionType::Base {
+            return Err("The base session cannot be put in a group".to_string());
+        }
+        if worktree.origin == Some(WorktreeOrigin::AutoFix) {
+            return Err("Auto-fix worktrees cannot be put in a group".to_string());
+        }
+        worktree.group_id = group_id;
+        if let Some(ids) = &worktree_ids {
+            apply_worktree_order(data, &project_id, ids);
+        }
+        Ok(())
+    })
 }
 
 // =============================================================================
@@ -13238,6 +13456,7 @@ pub async fn create_folder(
         added_at: now(),
         order,
         parent_id,
+        worktree_groups: Vec::new(),
         is_folder: true,
         avatar_path: None,
         default_avatar_path: None,
@@ -15992,6 +16211,7 @@ mod tests {
             added_at: 0,
             order: 0,
             parent_id: None,
+            worktree_groups: Vec::new(),
             is_folder: false,
             avatar_path: Some("avatars/project.png".to_string()),
             default_avatar_path: Some("stale".to_string()),
@@ -16178,6 +16398,7 @@ mod tests {
             added_at: 0,
             order: 0,
             parent_id: None,
+            worktree_groups: Vec::new(),
             is_folder: false,
             avatar_path: Some("avatars/project-1.png".to_string()),
             default_avatar_path: None,
@@ -17208,5 +17429,353 @@ mod cleanup_deleted_items_tests {
 
         assert_eq!(result.deleted_worktrees, 0);
         assert_eq!(load_projects_data(&app).unwrap().worktrees.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod worktree_group_tests {
+    use super::{
+        create_worktree_group, delete_worktree_group, forked_worktree_group_id,
+        move_worktree_to_group, rename_worktree_group, reorder_worktree_groups,
+    };
+    use crate::projects::storage::{load_projects_data, save_projects_data};
+    use crate::projects::types::{
+        Project, ProjectsData, SessionType, Worktree, WorktreeGroup, WorktreeOrigin,
+    };
+    use std::path::Path;
+    use tauri::AppHandle;
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        app: AppHandle,
+    }
+
+    fn project_json(id: &str, path: &Path) -> Project {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": id,
+            "path": path.to_string_lossy(),
+            "default_branch": "main",
+            "added_at": 1
+        }))
+        .expect("project")
+    }
+
+    fn worktree_json(id: &str, project_id: &str, path: &Path, order: u32) -> Worktree {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "project_id": project_id,
+            "name": id,
+            "path": path.to_string_lossy(),
+            "branch": id,
+            "created_at": 1,
+            "setup_output": null,
+            "setup_script": null,
+            "order": order
+        }))
+        .expect("worktree")
+    }
+
+    fn group(id: &str, name: &str, order: u32) -> WorktreeGroup {
+        WorktreeGroup {
+            id: id.to_string(),
+            name: name.to_string(),
+            order,
+        }
+    }
+
+    /// Projects "p" and "other"; worktrees "a", "b" in "p", "x" in "other",
+    /// "robot" (auto_fix) in "p". Real dirs, so the loader keeps them.
+    fn fixture(groups: Vec<WorktreeGroup>) -> Fixture {
+        let root = tempfile::tempdir().expect("tempdir");
+        let app =
+            AppHandle::new(root.path().join("data"), root.path().join("resources")).expect("app");
+        let dir = |name: &str| {
+            let path = root.path().join(name);
+            std::fs::create_dir_all(&path).expect("dir");
+            path
+        };
+        let mut project = project_json("p", &dir("repo-p"));
+        project.worktree_groups = groups;
+        let mut robot = worktree_json("robot", "p", &dir("wt-robot"), 4);
+        robot.origin = Some(WorktreeOrigin::AutoFix);
+        save_projects_data(
+            &app,
+            &ProjectsData {
+                projects: vec![project, project_json("other", &dir("repo-other"))],
+                worktrees: vec![
+                    worktree_json("a", "p", &dir("wt-a"), 1),
+                    worktree_json("b", "p", &dir("wt-b"), 2),
+                    worktree_json("x", "other", &dir("wt-x"), 7),
+                    robot,
+                ],
+            },
+        )
+        .expect("save");
+        Fixture { _root: root, app }
+    }
+
+    fn data(f: &Fixture) -> ProjectsData {
+        load_projects_data(&f.app).expect("load")
+    }
+
+    fn groups(f: &Fixture) -> Vec<WorktreeGroup> {
+        let mut groups = data(f).find_project("p").unwrap().worktree_groups.clone();
+        groups.sort_by_key(|g| g.order);
+        groups
+    }
+
+    fn worktree(f: &Fixture, id: &str) -> Worktree {
+        data(f).find_worktree(id).cloned().expect("worktree")
+    }
+
+    fn base_id(f: &Fixture) -> String {
+        data(f)
+            .worktrees
+            .iter()
+            .find(|w| w.project_id == "p" && w.session_type == SessionType::Base)
+            .expect("base session")
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn worktree_group_old_json_loads_and_empty_fields_are_not_serialized() {
+        let project = project_json("p", Path::new("/tmp/p"));
+        let worktree = worktree_json("a", "p", Path::new("/tmp/a"), 1);
+        assert!(project.worktree_groups.is_empty());
+        assert_eq!(worktree.group_id, None);
+
+        let project_value = serde_json::to_value(&project).unwrap();
+        let worktree_value = serde_json::to_value(&worktree).unwrap();
+        assert!(project_value.get("worktree_groups").is_none());
+        assert!(worktree_value.get("group_id").is_none());
+
+        let mut project = project;
+        project.worktree_groups = vec![group("g1", "Bugs", 0)];
+        let mut worktree = worktree;
+        worktree.group_id = Some("g1".to_string());
+        let project: Project =
+            serde_json::from_value(serde_json::to_value(&project).unwrap()).unwrap();
+        let worktree: Worktree =
+            serde_json::from_value(serde_json::to_value(&worktree).unwrap()).unwrap();
+        assert_eq!(project.worktree_groups, vec![group("g1", "Bugs", 0)]);
+        assert_eq!(worktree.group_id.as_deref(), Some("g1"));
+    }
+
+    #[tokio::test]
+    async fn worktree_group_create_dedupes_names_and_sets_order() {
+        let f = fixture(Vec::new());
+        let app = || f.app.clone();
+        let first = create_worktree_group(app(), "p".into(), "  Bugs ".into())
+            .await
+            .unwrap();
+        let second = create_worktree_group(app(), "p".into(), "bugs".into())
+            .await
+            .unwrap();
+        let third = create_worktree_group(app(), "p".into(), "Bugs".into())
+            .await
+            .unwrap();
+        assert_eq!((first.name.as_str(), first.order), ("Bugs", 0));
+        assert_eq!((second.name.as_str(), second.order), ("bugs (2)", 1));
+        assert_eq!((third.name.as_str(), third.order), ("Bugs (3)", 2));
+        assert_ne!(first.id, second.id);
+        assert_eq!(groups(&f), vec![first, second, third]);
+
+        assert!(create_worktree_group(app(), "p".into(), "   ".into())
+            .await
+            .is_err());
+        let long = "x".repeat(61);
+        assert!(create_worktree_group(app(), "p".into(), long)
+            .await
+            .is_err());
+        let max = "é".repeat(60);
+        assert!(create_worktree_group(app(), "p".into(), max).await.is_ok());
+        assert!(create_worktree_group(app(), "missing".into(), "G".into())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn worktree_group_rename_dedupes_against_other_groups() {
+        let f = fixture(vec![group("g1", "Bugs", 0), group("g2", "Features", 1)]);
+        let renamed = rename_worktree_group(f.app.clone(), "p".into(), "g1".into(), "BUGS".into())
+            .await
+            .unwrap();
+        assert_eq!(renamed, group("g1", "BUGS", 0));
+        let renamed =
+            rename_worktree_group(f.app.clone(), "p".into(), "g2".into(), " bugs ".into())
+                .await
+                .unwrap();
+        assert_eq!(renamed, group("g2", "bugs (2)", 1));
+        assert_eq!(groups(&f), vec![group("g1", "BUGS", 0), renamed]);
+        assert!(
+            rename_worktree_group(f.app.clone(), "p".into(), "nope".into(), "X".into())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_group_delete_clears_members_and_missing_is_ok() {
+        let f = fixture(vec![group("g1", "Bugs", 0), group("g2", "Features", 1)]);
+        move_worktree_to_group(
+            f.app.clone(),
+            "p".into(),
+            "a".into(),
+            Some("g1".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        move_worktree_to_group(
+            f.app.clone(),
+            "p".into(),
+            "b".into(),
+            Some("g2".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        delete_worktree_group(f.app.clone(), "p".into(), "g1".into())
+            .await
+            .unwrap();
+        assert_eq!(groups(&f), vec![group("g2", "Features", 1)]);
+        assert_eq!(worktree(&f, "a").group_id, None);
+        assert_eq!(worktree(&f, "b").group_id.as_deref(), Some("g2"));
+
+        delete_worktree_group(f.app.clone(), "p".into(), "g1".into())
+            .await
+            .unwrap();
+        assert!(
+            delete_worktree_group(f.app.clone(), "missing".into(), "g1".into())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_group_reorder_with_duplicates_and_unlisted_groups() {
+        let f = fixture(vec![
+            group("g1", "One", 0),
+            group("g2", "Two", 1),
+            group("g3", "Three", 2),
+            group("g4", "Four", 3),
+        ]);
+        reorder_worktree_groups(
+            f.app.clone(),
+            "p".into(),
+            vec!["g3".into(), "g1".into(), "g3".into()],
+        )
+        .await
+        .unwrap();
+        let ids: Vec<(String, u32)> = groups(&f).into_iter().map(|g| (g.id, g.order)).collect();
+        assert_eq!(
+            ids,
+            vec![
+                ("g3".to_string(), 0),
+                ("g1".to_string(), 1),
+                ("g2".to_string(), 2),
+                ("g4".to_string(), 3)
+            ]
+        );
+
+        let before = groups(&f);
+        assert!(
+            reorder_worktree_groups(f.app.clone(), "p".into(), vec!["g2".into(), "zz".into()])
+                .await
+                .is_err()
+        );
+        assert_eq!(groups(&f), before);
+    }
+
+    #[tokio::test]
+    async fn worktree_group_move_with_and_without_order() {
+        let f = fixture(vec![group("g1", "Bugs", 0)]);
+        let base = base_id(&f);
+
+        move_worktree_to_group(
+            f.app.clone(),
+            "p".into(),
+            "b".into(),
+            Some("g1".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(worktree(&f, "b").group_id.as_deref(), Some("g1"));
+        assert_eq!(worktree(&f, "a").order, 1);
+        assert_eq!(worktree(&f, "b").order, 2);
+
+        move_worktree_to_group(
+            f.app.clone(),
+            "p".into(),
+            "a".into(),
+            Some("g1".into()),
+            Some(vec![base.clone(), "b".into(), "a".into(), "x".into()]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(worktree(&f, "a").group_id.as_deref(), Some("g1"));
+        assert_eq!(worktree(&f, &base).order, 0);
+        assert_eq!(worktree(&f, "b").order, 1);
+        assert_eq!(worktree(&f, "a").order, 2);
+        // Another project's worktree in `worktree_ids` is skipped, not written.
+        assert_eq!(worktree(&f, "x").order, 7);
+        assert_eq!(worktree(&f, "x").group_id, None);
+
+        move_worktree_to_group(f.app.clone(), "p".into(), "a".into(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(worktree(&f, "a").group_id, None);
+    }
+
+    #[tokio::test]
+    async fn worktree_group_move_rejects_invalid_targets() {
+        let f = fixture(vec![group("g1", "Bugs", 0)]);
+        let base = base_id(&f);
+        let app = || f.app.clone();
+        let g1 = || Some("g1".to_string());
+
+        // Worktree of another project.
+        assert!(
+            move_worktree_to_group(app(), "p".into(), "x".into(), g1(), None)
+                .await
+                .is_err()
+        );
+        // Base session.
+        assert!(move_worktree_to_group(app(), "p".into(), base, g1(), None)
+            .await
+            .is_err());
+        // Auto-fix worktree.
+        assert!(
+            move_worktree_to_group(app(), "p".into(), "robot".into(), g1(), None)
+                .await
+                .is_err()
+        );
+        // Group of no project / of the wrong project.
+        assert!(
+            move_worktree_to_group(app(), "p".into(), "a".into(), Some("zz".into()), None)
+                .await
+                .is_err()
+        );
+        assert!(
+            move_worktree_to_group(app(), "other".into(), "x".into(), g1(), None)
+                .await
+                .is_err()
+        );
+        // Nothing was written.
+        assert_eq!(worktree(&f, "x").group_id, None);
+        assert_eq!(worktree(&f, "a").group_id, None);
+        assert_eq!(worktree(&f, "robot").group_id, None);
+    }
+
+    #[test]
+    fn worktree_group_fork_copies_source_group() {
+        let mut source = worktree_json("a", "p", Path::new("/tmp/a"), 1);
+        assert_eq!(forked_worktree_group_id(&source), None);
+        source.group_id = Some("g1".to_string());
+        assert_eq!(forked_worktree_group_id(&source).as_deref(), Some("g1"));
     }
 }

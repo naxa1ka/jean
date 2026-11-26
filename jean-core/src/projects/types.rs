@@ -276,6 +276,17 @@ pub fn normalize_sentry_project_links(links: Vec<SentryProjectLink>) -> Vec<Sent
     normalized
 }
 
+/// A named, user-made group of worktrees inside one project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorktreeGroup {
+    /// Unique identifier (UUID v4, never scoped with a server prefix)
+    pub id: String,
+    /// Display name (trimmed, max 60 characters, unique per project)
+    pub name: String,
+    /// Display order among the project's groups (lower = higher in list)
+    pub order: u32,
+}
+
 /// A git project that has been added to Jean, or a folder for organizing projects
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -295,6 +306,9 @@ pub struct Project {
     /// Parent folder ID (None = root level)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    /// User-made worktree groups of this project
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktree_groups: Vec<WorktreeGroup>,
     /// True if this is a folder (not a real project)
     #[serde(default)]
     pub is_folder: bool,
@@ -516,6 +530,10 @@ pub struct Worktree {
     /// Worktree origin/category.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<WorktreeOrigin>,
+    /// Worktree group this worktree belongs to (None = ungrouped). An id of a
+    /// missing group is treated as ungrouped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     /// User-assigned labels with colors (e.g. "In Progress").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<LabelData>,
@@ -975,6 +993,7 @@ impl Worktree {
             origin: None,
             archived_at: None,
             labels: Vec::new(),
+            group_id: None,
             label: None,
             last_opened_at: None,
         }

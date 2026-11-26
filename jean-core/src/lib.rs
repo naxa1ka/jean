@@ -4659,6 +4659,7 @@ pub async fn get_server_capabilities() -> Result<ServerCapabilitiesEnvelope, Str
         capabilities: std::collections::BTreeMap::from([
             ("marks".to_string(), 4),
             ("multiServerTransport".to_string(), 1),
+            ("worktreeGroups".to_string(), 1),
         ]),
         magic_prompts: prompts
             .into_iter()
@@ -4864,6 +4865,7 @@ mod server_capabilities_tests {
         assert_eq!(value["apiProtocolMin"], 1);
         assert_eq!(value["capabilities"]["multiServerTransport"], 1);
         assert_eq!(value["capabilities"]["marks"], 4);
+        assert_eq!(value["capabilities"]["worktreeGroups"], 1);
         assert!(value.get("featureSurfaces").is_none());
         assert!(value.get("magicPrompts").is_some());
     }

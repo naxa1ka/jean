@@ -53,6 +53,63 @@ export const test = base.extend<TauriMockFixtures>({
         )
           ? structuredClone(responseMap.list_worktrees)
           : []
+        const projectStore: Array<Record<string, unknown>> = Array.isArray(
+          responseMap.list_projects
+        )
+          ? structuredClone(responseMap.list_projects)
+          : []
+
+        function findProject(args?: Record<string, unknown>) {
+          const projectId = args?.projectId ?? args?.project_id
+          const project = projectStore.find(item => item.id === projectId)
+          if (!project) throw new Error(`Project not found: ${projectId}`)
+          return project
+        }
+
+        function projectGroups(project: Record<string, unknown>) {
+          if (!Array.isArray(project.worktree_groups)) {
+            project.worktree_groups = []
+          }
+          return project.worktree_groups as Array<{
+            id: string
+            name: string
+            order: number
+          }>
+        }
+
+        // Same rules as the backend: trim, max 60 chars, "Name (2)" dedupe
+        function uniqueGroupName(
+          groups: Array<{ id: string; name: string }>,
+          rawName: unknown,
+          ignoreId?: string
+        ) {
+          const base = String(rawName ?? '').trim()
+          if (!base) throw new Error('Group name cannot be empty')
+          if ([...base].length > 60) throw new Error('Group name is too long')
+          const taken = new Set(
+            groups.filter(g => g.id !== ignoreId).map(g => g.name.toLowerCase())
+          )
+          let name = base
+          for (let n = 2; taken.has(name.toLowerCase()); n++) {
+            name = `${base} (${n})`
+          }
+          return name
+        }
+
+        // Like `reorder_worktrees`: order 1..n, base sessions stay 0, other
+        // projects untouched
+        function applyWorktreeOrder(projectId: unknown, worktreeIds: unknown) {
+          if (!Array.isArray(worktreeIds)) return
+          let nextOrder = 1
+          for (const worktreeId of worktreeIds) {
+            const worktree = worktreeStore.find(
+              item => item.id === worktreeId && item.project_id === projectId
+            )
+            if (!worktree || worktree.session_type === 'base') continue
+            worktree.order = nextOrder
+            nextOrder += 1
+          }
+        }
 
         function getWorktreeStore(worktreeId: string) {
           if (!sessionStore[worktreeId]) {
@@ -105,6 +162,77 @@ export const test = base.extend<TauriMockFixtures>({
                 )
                 .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0))
             )
+          },
+          list_projects: () => structuredClone(projectStore),
+          create_worktree_group: args => {
+            const groups = projectGroups(findProject(args))
+            const group = {
+              id: crypto.randomUUID(),
+              name: uniqueGroupName(groups, args?.name),
+              order: groups.length
+                ? Math.max(...groups.map(g => g.order)) + 1
+                : 0,
+            }
+            groups.push(group)
+            return structuredClone(group)
+          },
+          rename_worktree_group: args => {
+            const groups = projectGroups(findProject(args))
+            const group = groups.find(g => g.id === args?.groupId)
+            if (!group) throw new Error(`Group not found: ${args?.groupId}`)
+            group.name = uniqueGroupName(groups, args?.name, group.id)
+            return structuredClone(group)
+          },
+          delete_worktree_group: args => {
+            const project = findProject(args)
+            project.worktree_groups = projectGroups(project).filter(
+              g => g.id !== args?.groupId
+            )
+            for (const worktree of worktreeStore) {
+              if (
+                worktree.project_id === project.id &&
+                worktree.group_id === args?.groupId
+              ) {
+                worktree.group_id = null
+              }
+            }
+            return null
+          },
+          reorder_worktree_groups: args => {
+            const groups = projectGroups(findProject(args))
+            const listed = [
+              ...new Set(
+                Array.isArray(args?.groupIds) ? (args.groupIds as string[]) : []
+              ),
+            ]
+            const unlisted = groups
+              .filter(g => !listed.includes(g.id))
+              .sort((a, b) => a.order - b.order)
+            for (const group of groups) {
+              const index = listed.indexOf(group.id)
+              group.order =
+                index >= 0 ? index : listed.length + unlisted.indexOf(group)
+            }
+            return null
+          },
+          move_worktree_to_group: args => {
+            const project = findProject(args)
+            const groupId = (args?.groupId ?? null) as string | null
+            if (
+              groupId != null &&
+              !projectGroups(project).some(g => g.id === groupId)
+            ) {
+              throw new Error(`Group not found: ${groupId}`)
+            }
+            const worktree = worktreeStore.find(
+              item =>
+                item.id === args?.worktreeId && item.project_id === project.id
+            )
+            if (!worktree)
+              throw new Error(`Worktree not found: ${args?.worktreeId}`)
+            worktree.group_id = groupId
+            applyWorktreeOrder(project.id, args?.worktreeIds)
+            return null
           },
           reorder_worktrees: args => {
             const orderedIds = Array.isArray(args?.worktreeIds)
@@ -184,10 +312,7 @@ export const test = base.extend<TauriMockFixtures>({
             const worktree = worktreeStore.find(
               item => item.id === fixture.worktreeId
             )
-            const projects = Array.isArray(responseMap.list_projects)
-              ? (responseMap.list_projects as Record<string, unknown>[])
-              : []
-            const project = projects.find(
+            const project = projectStore.find(
               item => item.id === worktree?.project_id
             )
             const items = getWorktreeStore(fixture.worktreeId).sessions.map(
@@ -225,9 +350,13 @@ export const test = base.extend<TauriMockFixtures>({
         const handlers: Record<string, (args?: any) => unknown> = {}
 
         for (const [cmd, data] of Object.entries(responseMap)) {
-          // Keep worktree list overrides stateful so reorder_worktrees can update
-          // the same in-memory data during tests.
-          if (cmd === 'list_worktrees' || cmd === 'reorder_worktrees') {
+          // Keep project and worktree list overrides stateful so reorder and
+          // group commands can update the same in-memory data during tests.
+          if (
+            cmd === 'list_projects' ||
+            cmd === 'list_worktrees' ||
+            cmd === 'reorder_worktrees'
+          ) {
             handlers[cmd] = dynamicHandlers[cmd]
           } else if (overrideSet.has(cmd)) {
             // If explicitly overridden, use static response (override wins over dynamic)

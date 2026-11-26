@@ -1390,6 +1390,7 @@ fn project_from_pending_auto_yolo(entry: &PendingAutoYolo) -> Project {
         added_at: 0,
         order: 0,
         parent_id: None,
+        worktree_groups: Vec::new(),
         is_folder: false,
         avatar_path: None,
         default_avatar_path: None,
@@ -1710,6 +1711,7 @@ mod tests {
             added_at: 0,
             order: 0,
             parent_id: None,
+            worktree_groups: Vec::new(),
             is_folder,
             avatar_path: None,
             default_avatar_path: None,
@@ -1780,6 +1782,7 @@ mod tests {
             origin,
             archived_at,
             labels: Vec::new(),
+            group_id: None,
             label: None,
             last_opened_at: None,
         }
