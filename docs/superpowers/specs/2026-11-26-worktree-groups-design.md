@@ -192,3 +192,4 @@ Exact header styling, drop-indicator look, toast copy, test file names, hook int
 
 ## Notes
 - Collapse keys: group UUID, or project id for Ungrouped; never scoped. (Slice 02 wins over the "scoped by server like `expanded_folder_ids`" line in Frontend.)
+- Canvas (slice 04): while a search or a non-"all" tab is active, an empty Ungrouped header hides like empty groups (drag is off there, so it is no drop target). On "all" without search it always shows.

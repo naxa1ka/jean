@@ -134,6 +134,26 @@ export function persistedWorktreeOrder(
 }
 
 /**
+ * Order to send with "Move to group" in manual sort: the full persisted order
+ * of the project's cached worktrees with `movedId` at the end of the target
+ * group. Never pass search or tab filtered lists here.
+ */
+export function moveToGroupEndOrder(
+  cachedWorktrees: readonly Worktree[],
+  movedId: string,
+  targetGroupId: string | null,
+  groups: readonly WorktreeGroup[] | undefined
+): string[] {
+  return orderForMoveToGroupEnd(
+    persistedWorktreeOrder(cachedWorktrees),
+    new Map(cachedWorktrees.map(w => [w.id, w])),
+    movedId,
+    targetGroupId,
+    groups
+  )
+}
+
+/**
  * Whether two worktrees show in the same group (both ungrouped counts). The
  * sidebar reorder drag only drops inside one group; unknown ids never match.
  */

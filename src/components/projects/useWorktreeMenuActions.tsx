@@ -24,8 +24,7 @@ import { useProjectsStore } from '@/store/projects-store'
 import {
   canGroupWorktree,
   effectiveGroupId,
-  orderForMoveToGroupEnd,
-  persistedWorktreeOrder,
+  moveToGroupEndOrder,
 } from '@/lib/worktree-groups'
 import { useWorktreeGroupsSupported } from '@/lib/worktree-groups-level'
 import { useCreateWorktreeGroupAndRename } from './useCreateWorktreeGroupAndRename'
@@ -79,9 +78,8 @@ export function useWorktreeMenuActions({
           queryClient.getQueryData<Worktree[]>(
             projectsQueryKeys.worktrees(projectId)
           ) ?? []
-        worktreeIds = orderForMoveToGroupEnd(
-          persistedWorktreeOrder(cached),
-          new Map(cached.map(w => [w.id, w])),
+        worktreeIds = moveToGroupEndOrder(
+          cached,
           worktree.id,
           groupId,
           knownGroups

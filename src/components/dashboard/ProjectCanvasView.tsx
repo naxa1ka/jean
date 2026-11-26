@@ -106,6 +106,7 @@ import {
   useOpenWorktreeInTerminal,
   useRemoveProject,
   useReorderWorktrees,
+  useMoveWorktreeToGroup,
   projectsQueryKeys,
   type PackageScript,
 } from '@/services/projects'
@@ -129,7 +130,12 @@ import { useChatStore } from '@/store/chat-store'
 import { useProjectsStore } from '@/store/projects-store'
 import { useUIStore } from '@/store/ui-store'
 import { useTerminalStore } from '@/store/terminal-store'
-import { isBaseSession, type Project, type Worktree } from '@/types/projects'
+import {
+  isBaseSession,
+  type Project,
+  type Worktree,
+  type WorktreeGroup,
+} from '@/types/projects'
 import { getEditorLabel, getTerminalLabel } from '@/types/preferences'
 import type { LabelData, Session, WorktreeSessions } from '@/types/chat'
 import { getSessionLabels } from '@/types/chat'
@@ -256,6 +262,20 @@ import {
   type WorktreeReorderDragState,
 } from '@/lib/drag-and-drop/worktree-reorder-ux'
 import { openCanvasConflictResolution } from './conflict-resolution-navigation'
+import {
+  canGroupWorktree,
+  effectiveGroupId,
+  isSameWorktreeGroup,
+  moveToGroupEndOrder,
+} from '@/lib/worktree-groups'
+import { useWorktreeGroupsSupported } from '@/lib/worktree-groups-level'
+import { MoveToGroupMenuItems } from '@/components/projects/MoveToGroupMenuItems'
+import { CanvasWorktreeGroupHeader } from './CanvasWorktreeGroupHeader'
+import {
+  buildCanvasGroupedList,
+  findGroupedKeyboardMoveTarget,
+  nearestVisibleWorktreeId,
+} from './canvas-worktree-groups'
 import { getCanvasDiffRequest } from './canvas-diff-request'
 import { resolveModalWorktreeSnapshot } from './modal-worktree-snapshot'
 import {
@@ -273,6 +293,7 @@ interface ProjectCanvasViewProps {
 
 const EMPTY_PINNED_LABELS: LabelData[] = []
 const EMPTY_LABELS: LabelData[] = []
+const NO_WORKTREE_GROUPS: readonly WorktreeGroup[] = []
 
 const WORKTREE_SORT_OPTIONS: { value: WorktreeSortMode; label: string }[] = [
   { value: 'created', label: 'Creation date' },
@@ -331,6 +352,7 @@ function SortableCanvasWorktreeSection({
   isDragging,
   closestEdge,
   projectId,
+  canDropRow,
   children,
 }: {
   section: WorktreeSection
@@ -339,6 +361,8 @@ function SortableCanvasWorktreeSection({
   isDragging: boolean
   closestEdge: Edge | null
   projectId: string
+  /** Stable: extra rule for a row drop (grouped mode: same group only). */
+  canDropRow?: (sourceId: string, targetId: string) => boolean
   children: React.ReactNode
 }) {
   const elementRef = useRef<HTMLDivElement | null>(null)
@@ -358,7 +382,8 @@ function SortableCanvasWorktreeSection({
             source.data.projectId === projectId &&
             source.data.scope === DRAG_SCOPE_CANVAS_WORKTREE_LIST &&
             source.data.worktreeId !== section.worktree.id &&
-            source.data.rowState === rowState
+            source.data.rowState === rowState &&
+            (canDropRow?.(source.data.worktreeId, section.worktree.id) ?? true)
           )
         },
         getData: ({ input, element }) => {
@@ -398,7 +423,7 @@ function SortableCanvasWorktreeSection({
     }
 
     return combine(...cleanupFns)
-  }, [disabled, projectId, rowState, section.worktree.id])
+  }, [canDropRow, disabled, projectId, rowState, section.worktree.id])
 
   return (
     <div
@@ -433,6 +458,17 @@ interface FlatCard {
   card: SessionCardData | null // null for pending worktrees
   globalIndex: number
   isPending?: boolean
+}
+
+function toFlatCards(sections: readonly WorktreeSection[]): FlatCard[] {
+  // One entry per worktree
+  return sections.map((section, globalIndex) => ({
+    worktreeId: section.worktree.id,
+    worktreePath: section.worktree.path,
+    card: section.cards[0] ?? null,
+    globalIndex,
+    isPending: section.isPending,
+  }))
 }
 
 interface CanvasHighlight {
@@ -553,6 +589,8 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   disableTextSelection = false,
   planQueue,
   markDefinitions,
+  worktreeGroups = NO_WORKTREE_GROUPS,
+  onMoveToGroup,
 }: {
   worktree: Worktree
   projectId: string
@@ -573,6 +611,9 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   planQueue?: PlanQueueSummary
   /** Mark list of the project's server; the definition wins for color and icon. */
   markDefinitions: readonly MarkDefinition[]
+  /** Project groups for the "Move to group" menu (set with `onMoveToGroup`). */
+  worktreeGroups?: readonly WorktreeGroup[]
+  onMoveToGroup?: (worktree: Worktree, groupId: string | null) => void
 }) {
   const { elementRef: rowVisibilityRef, isVisible } = useCanvasRowVisibility()
   const stackedBaseBranch = getStackedBaseBranch(
@@ -1060,7 +1101,10 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
   const hasCompactDetails =
     showPrDetails || showDiffDetails || showSyncDetails || showQueueToggle
 
-  if (!onSetLabels && !hasCompactDetails) return row
+  const showMoveToGroup =
+    !!onMoveToGroup && worktreeGroups.length > 0 && canGroupWorktree(worktree)
+
+  if (!onSetLabels && !hasCompactDetails && !showMoveToGroup) return row
 
   return (
     <ContextMenu>
@@ -1103,12 +1147,21 @@ const WorktreeSectionHeader = memo(function WorktreeSectionHeader({
           </ContextMenuItem>
         )}
         {showQueueToggle && <PlanQueueMenuItem summary={planQueue} />}
-        {onSetLabels && hasCompactDetails && <ContextMenuSeparator />}
+        {(onSetLabels || showMoveToGroup) && hasCompactDetails && (
+          <ContextMenuSeparator />
+        )}
         {onSetLabels && (
           <ContextMenuItem onSelect={handleSetLabels}>
             <Bookmark className="mr-2 h-4 w-4" />
             Marks…
           </ContextMenuItem>
+        )}
+        {showMoveToGroup && (
+          <MoveToGroupMenuItems
+            groups={worktreeGroups}
+            currentGroupId={effectiveGroupId(worktree, worktreeGroups)}
+            onMove={groupId => onMoveToGroup(worktree, groupId)}
+          />
         )}
       </ContextMenuContent>
     </ContextMenu>
@@ -1143,6 +1196,7 @@ export function ProjectCanvasView({
   const createBaseSession = useCreateBaseSession()
   const removeProject = useRemoveProject()
   const reorderWorktrees = useReorderWorktrees()
+  const moveWorktreeToGroup = useMoveWorktreeToGroup()
   const openOnGitHub = useOpenProjectOnGitHub()
   const openInFinder = useOpenWorktreeInFinder()
   const openWorktreesFolder = useOpenProjectWorktreesFolder()
@@ -1163,6 +1217,17 @@ export function ProjectCanvasView({
     isMobile,
     isNative: isTauri(),
   })
+  // Grouped mode: the project's groups replace the row-state headers. The
+  // Robot tab and projects without groups keep the state headers.
+  const worktreeGroupsSupported = useWorktreeGroupsSupported(project.serverId)
+  const worktreeGroups = worktreeGroupsSupported
+    ? (project.worktree_groups ?? NO_WORKTREE_GROUPS)
+    : NO_WORKTREE_GROUPS
+  const isGroupedMode =
+    worktreeGroups.length > 0 && activeFilterTab !== 'auto_fix'
+  const collapsedWorktreeGroupKeys = useProjectsStore(
+    state => state.collapsedWorktreeGroupKeys
+  )
   const disableWorktreeTextSelection = shouldDisableWorktreeTextSelection({
     isMobile,
   })
@@ -1471,6 +1536,35 @@ export function ProjectCanvasView({
     [createBaseSession, openWorktreeModal, projectId, worktrees]
   )
 
+  // Row menu "Move to group": end of the target group in manual sort, using
+  // the full cached order (never the search / tab filtered sections).
+  const handleMoveWorktreeToGroup = useCallback(
+    (worktree: Worktree, groupId: string | null) => {
+      const cached =
+        queryClient.getQueryData<Worktree[]>(
+          projectsQueryKeys.worktrees(projectId)
+        ) ?? []
+      const worktreeIds =
+        worktreeSortMode === 'manual'
+          ? moveToGroupEndOrder(cached, worktree.id, groupId, worktreeGroups)
+          : undefined
+      moveWorktreeToGroup.mutate({
+        projectId,
+        worktreeId: worktree.id,
+        groupId,
+        ...(worktreeIds ? { worktreeIds } : {}),
+        switchToManualSort: false,
+      })
+    },
+    [
+      moveWorktreeToGroup,
+      projectId,
+      queryClient,
+      worktreeGroups,
+      worktreeSortMode,
+    ]
+  )
+
   const handleCanvasResolveConflicts = useCallback(
     (worktree: Worktree) => {
       openCanvasConflictResolution(worktree, {
@@ -1612,6 +1706,44 @@ export function ProjectCanvasView({
     [orderedWorktreeSections]
   )
 
+  // Grouped mode render order. Used only for rendering and navigation;
+  // `worktreeSections` stays the full state-sorted list.
+  const hasCanvasSearchQuery = searchQuery.trim().length > 0
+  const groupedList = useMemo(
+    () =>
+      isGroupedMode
+        ? buildCanvasGroupedList({
+            sections: orderedWorktreeSections,
+            groups: worktreeGroups,
+            projectId,
+            collapsedKeys: collapsedWorktreeGroupKeys,
+            hasSearchQuery: hasCanvasSearchQuery,
+            activeFilterTab,
+            getRowState: getSectionRowState,
+          })
+        : null,
+    [
+      activeFilterTab,
+      collapsedWorktreeGroupKeys,
+      hasCanvasSearchQuery,
+      isGroupedMode,
+      orderedWorktreeSections,
+      projectId,
+      worktreeGroups,
+    ]
+  )
+  // Rows the user can see and navigate, in visual order.
+  const displayRows = groupedList?.visibleRows ?? worktreeSections
+  // Every row in visual order, rows of collapsed groups too.
+  const allDisplayRows = groupedList?.allRows ?? worktreeSections
+  const hiddenWorktreeIds = useMemo(() => {
+    if (!groupedList) return null
+    const visible = new Set(groupedList.visibleRows.map(s => s.worktree.id))
+    return new Set(
+      groupedList.allRows.map(s => s.worktree.id).filter(id => !visible.has(id))
+    )
+  }, [groupedList])
+
   // Summary counts are independent of canvas search and the selected tab.
   const robotRows = useMemo(
     () =>
@@ -1693,9 +1825,25 @@ export function ProjectCanvasView({
     []
   )
 
+  // Grouped mode drags stay inside one group. Read through a ref so the
+  // callback is stable and drop targets do not re-register.
+  const canDropCanvasRowRef = useLatestRef(
+    (sourceId: string, targetId: string) => {
+      if (!isGroupedMode) return true
+      const byId = new Map(worktrees.map(w => [w.id, w]))
+      return isSameWorktreeGroup(sourceId, targetId, byId, worktreeGroups)
+    }
+  )
+  const canDropCanvasRow = useCallback(
+    (sourceId: string, targetId: string) =>
+      canDropCanvasRowRef.current(sourceId, targetId),
+    [canDropCanvasRowRef]
+  )
+
   const reorderCanvasFromDrop = useCallback(
     (activeId: string, overId: string, closestEdge: Edge | null) => {
       if (!canvasReorderEnabled || activeId === overId) return
+      if (!canDropCanvasRow(activeId, overId)) return
 
       const oldIndex = canvasDraggableIds.indexOf(activeId)
       const newIndex = canvasDraggableIds.indexOf(overId)
@@ -1732,6 +1880,7 @@ export function ProjectCanvasView({
       announceDrag('Worktree section reordered')
     },
     [
+      canDropCanvasRow,
       canvasDraggableIdSet,
       canvasDraggableIds,
       canvasReorderEnabled,
@@ -1816,12 +1965,14 @@ export function ProjectCanvasView({
         clientY: event.clientY,
       })
       if (!snapshot.targetId) return
+      if (!canDropCanvasRow(canvasDragState.draggingId, snapshot.targetId))
+        return
 
       event.preventDefault()
       latestCanvasDropTargetRef.current = snapshot
       setCanvasDragState(state => applyWorktreeDropSnapshot(state, snapshot))
     },
-    [canvasDragState.draggingId]
+    [canDropCanvasRow, canvasDragState.draggingId]
   )
 
   const handleNativeCanvasDrop = useCallback(
@@ -1868,6 +2019,7 @@ export function ProjectCanvasView({
         clientY: event.clientY,
       })
       if (!snapshot.targetId) return
+      if (!canDropCanvasRow(draggingId, snapshot.targetId)) return
 
       event.preventDefault()
       latestCanvasDropTargetRef.current = snapshot
@@ -1910,25 +2062,20 @@ export function ProjectCanvasView({
       document.removeEventListener('drop', handleDocumentDrop, true)
       document.removeEventListener('dragend', handleDocumentDragEnd, true)
     }
-  }, [reorderCanvasFromDrop])
+  }, [canDropCanvasRow, reorderCanvasFromDrop])
 
-  // Build flat array of all cards for keyboard navigation
-  const flatCards: FlatCard[] = useMemo(() => {
-    const result: FlatCard[] = []
-    let globalIndex = 0
-    for (const section of worktreeSections) {
-      // One entry per worktree
-      result.push({
-        worktreeId: section.worktree.id,
-        worktreePath: section.worktree.path,
-        card: section.cards[0] ?? null,
-        globalIndex,
-        isPending: section.isPending,
-      })
-      globalIndex++
-    }
-    return result
-  }, [worktreeSections])
+  // Build flat array of the visible cards for keyboard navigation (rows of
+  // collapsed groups are left out so indices match `cardRefs`).
+  const flatCards: FlatCard[] = useMemo(
+    () => toFlatCards(displayRows),
+    [displayRows]
+  )
+  // Full visual order, collapsed rows too (restore search only).
+  const allFlatCards: FlatCard[] = useMemo(
+    () =>
+      allDisplayRows === displayRows ? flatCards : toFlatCards(allDisplayRows),
+    [allDisplayRows, displayRows, flatCards]
+  )
 
   // Selection state
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
@@ -2188,6 +2335,31 @@ export function ProjectCanvasView({
       setSelectedIndex(cardIndex)
       return
     }
+    // Selected row is in a collapsed group. With the modal open it still
+    // shows that worktree: keep the selection. Otherwise move to the nearest
+    // visible row so Enter / Cmd+W never act on another worktree.
+    if (cardIndex === -1 && hiddenWorktreeIds?.has(highlighted.worktreeId)) {
+      if (selectedWorktreeModal) return
+      const nextId = nearestVisibleWorktreeId(
+        allFlatCards.map(fc => fc.worktreeId),
+        new Set(flatCards.map(fc => fc.worktreeId)),
+        highlighted.worktreeId
+      )
+      const nextIndex = nextId
+        ? flatCards.findIndex(fc => fc.worktreeId === nextId)
+        : -1
+      const nextItem = flatCards[nextIndex]
+      if (!nextItem) {
+        // Nothing visible: do not auto-open a modal once a group expands.
+        suppressNextRestoreAutoOpenRef.current = true
+        highlightedCardRef.current = null
+        setSelectedIndex(null)
+        return
+      }
+      highlightedCardRef.current = getCanvasHighlight(nextItem)
+      setSelectedIndex(nextIndex)
+      return
+    }
     if (cardIndex === -1 && activeFilterTab !== 'all' && flatCards.length > 0) {
       setSelectedIndex(0)
       const fallbackItem = flatCards[0]
@@ -2198,7 +2370,14 @@ export function ProjectCanvasView({
           }
         : null
     }
-  }, [selectedWorktreeModal, flatCards, selectedIndex, activeFilterTab])
+  }, [
+    selectedWorktreeModal,
+    flatCards,
+    allFlatCards,
+    hiddenWorktreeIds,
+    selectedIndex,
+    activeFilterTab,
+  ])
 
   // Keep a valid selection when the selected item disappears (delete/close).
   // In list layout this prefers the previous row, matching expected canvas behavior.
@@ -2206,6 +2385,15 @@ export function ProjectCanvasView({
   useEffect(() => {
     if (selectedIndex === null) return
     if (searchQuery) return
+    // Grouped mode: the re-sync effect owns rows that a collapse hid, and the
+    // open modal keeps its worktree selected.
+    if (
+      hiddenWorktreeIds &&
+      (selectedWorktreeModal ||
+        hiddenWorktreeIds.has(highlightedCardRef.current?.worktreeId ?? ''))
+    ) {
+      return
+    }
     if (flatCards.length === 0) {
       setSelectedIndex(null)
       highlightedCardRef.current = null
@@ -2230,7 +2418,14 @@ export function ProjectCanvasView({
     } else {
       highlightedCardRef.current = null
     }
-  }, [flatCards, selectedIndex, searchQuery, activeFilterTab])
+  }, [
+    flatCards,
+    selectedIndex,
+    searchQuery,
+    activeFilterTab,
+    hiddenWorktreeIds,
+    selectedWorktreeModal,
+  ])
 
   // Auto-open session modal for newly created worktrees / unread-session clicks
   useEffect(() => {
@@ -2348,6 +2543,7 @@ export function ProjectCanvasView({
     let shouldAutoOpenModal = false
     let resolvedLastOpenedSessionId: string | null = null
     let lastOpenedPickIsTemporary = false
+    let hiddenLastOpenedCard: FlatCard | null = null
 
     // First: check lastOpenedPerProject for this project
     const lastOpened = lastOpenedPerProject[projectId]
@@ -2368,32 +2564,44 @@ export function ProjectCanvasView({
         resolvedLastOpenedSessionId !== null &&
         resolvePersistedActiveSessionId(selection) === null
 
-      for (const fc of flatCards) {
-        if (!fc.card || fc.isPending) continue
-        if (
-          fc.worktreeId === lastOpened.worktreeId &&
-          fc.card.session.id === lastOpened.sessionId
-        ) {
-          targetIndex = fc.globalIndex
-          shouldAutoOpenModal = true
-          break
-        }
-      }
-
-      // In list layout (or reordered cards), there may be only one card per worktree,
-      // so exact session match can fail even when the worktree exists.
-      if (targetIndex === -1) {
-        const worktreeCard = flatCards.find(
-          fc =>
-            !fc.isPending &&
-            fc.card !== null &&
-            fc.worktreeId === lastOpened.worktreeId
+      // Search the full order: the worktree may be in a collapsed group.
+      // In list layout there is one card per worktree, so match the worktree.
+      const lastOpenedCard = allFlatCards.find(
+        fc =>
+          !fc.isPending &&
+          fc.card !== null &&
+          fc.worktreeId === lastOpened.worktreeId
+      )
+      if (lastOpenedCard) {
+        shouldAutoOpenModal = true
+        targetIndex = flatCards.findIndex(
+          fc => fc.worktreeId === lastOpenedCard.worktreeId
         )
-        if (worktreeCard) {
-          targetIndex = worktreeCard.globalIndex
-          shouldAutoOpenModal = true
-        }
+        if (targetIndex === -1) hiddenLastOpenedCard = lastOpenedCard
       }
+    }
+
+    // Last opened worktree is in a collapsed group: open it (openWorktreeModal
+    // selects it and the reveal hook expands its group). When the auto-open is
+    // suppressed, select a visible card instead.
+    if (hiddenLastOpenedCard?.card) {
+      if (!suppressNextRestoreAutoOpenRef.current) {
+        if (!lastOpenedPickIsTemporary) {
+          useChatStore
+            .getState()
+            .setActiveSession(
+              hiddenLastOpenedCard.worktreeId,
+              resolvedLastOpenedSessionId ??
+                hiddenLastOpenedCard.card.session.id
+            )
+        }
+        openWorktreeModal(
+          hiddenLastOpenedCard.worktreeId,
+          hiddenLastOpenedCard.worktreePath
+        )
+        return
+      }
+      shouldAutoOpenModal = false
     }
 
     // Second: check the last active worktree's session
@@ -2467,6 +2675,7 @@ export function ProjectCanvasView({
     }
   }, [
     flatCards,
+    allFlatCards,
     selectedIndex,
     selectedWorktreeModal,
     projectId,
@@ -2540,7 +2749,16 @@ export function ProjectCanvasView({
       const oldIndex = canvasDraggableIds.indexOf(activeId)
       if (oldIndex === -1) return
 
-      const targetId = canvasDraggableIds[oldIndex + direction]
+      const targetId = isGroupedMode
+        ? findGroupedKeyboardMoveTarget({
+            visibleIds: flatCards.map(fc => fc.worktreeId),
+            activeId,
+            direction,
+            worktreesById: new Map(worktrees.map(w => [w.id, w])),
+            groups: worktreeGroups,
+            rowStateById: canvasRowStateById,
+          })
+        : canvasDraggableIds[oldIndex + direction]
       if (!targetId) return
 
       if (selectedItem?.card) {
@@ -2561,10 +2779,14 @@ export function ProjectCanvasView({
     [
       canvasDraggableIds,
       canvasReorderEnabled,
+      canvasRowStateById,
       flatCards,
+      isGroupedMode,
       reorderCanvasFromDrop,
       reorderWorktrees.isPending,
       selectedIndex,
+      worktreeGroups,
+      worktrees,
     ]
   )
 
@@ -2639,10 +2861,16 @@ export function ProjectCanvasView({
   // This fixes the bug where closing a session calls selectProject() which clears selectedWorktreeId,
   // but the dashboard still has a card selected via selectedIndex
   useEffect(() => {
-    if (selectedIndex !== null) {
-      syncSelectionToStore(selectedIndex)
+    if (selectedIndex === null) return
+    // The open modal owns the selected worktree (Cmd+M / Update PR target it).
+    if (
+      selectedWorktreeModal &&
+      flatCards[selectedIndex]?.worktreeId !== selectedWorktreeModal.worktreeId
+    ) {
+      return
     }
-  }, [selectedIndex, syncSelectionToStore])
+    syncSelectionToStore(selectedIndex)
+  }, [selectedIndex, syncSelectionToStore, selectedWorktreeModal, flatCards])
 
   // CMD+1–9: open worktree by index (dispatched by centralized keybinding system)
   const onOpenWorktreeByIndex = useEffectEvent((e: Event) => {
@@ -2656,9 +2884,9 @@ export function ProjectCanvasView({
         firstFlatIndexByWorktreeId.set(fc.worktreeId, i)
       }
     }
-    // Find the nth non-pending worktree section
+    // Find the nth non-pending visible worktree section (visual order)
     let count = 0
-    for (const section of worktreeSections) {
+    for (const section of displayRows) {
       if (section.isPending) continue
       if (count === index) {
         const flatIndex = firstFlatIndexByWorktreeId.get(section.worktree.id)
@@ -3685,15 +3913,175 @@ export function ProjectCanvasView({
             )
           ) : (
             <div
+              data-testid="canvas-worktree-list"
               className="group/canvas-list flex flex-col gap-1"
               onDragOver={handleNativeCanvasDragOver}
               onDrop={handleNativeCanvasDrop}
               onDragEnd={handleNativeCanvasDragEnd}
             >
               {(() => {
+                const renderRow = (
+                  section: WorktreeSection,
+                  rowState: CanvasRowState
+                ) => {
+                  const currentIndex = cardIndex++
+                  const isReorderDisabled =
+                    !canvasReorderEnabled ||
+                    reorderWorktrees.isPending ||
+                    !canManuallyReorderWorktree(section.worktree)
+
+                  if (section.isPending) {
+                    return (
+                      <SortableCanvasWorktreeSection
+                        key={section.worktree.id}
+                        section={section}
+                        rowState={rowState}
+                        disabled={true}
+                        isDragging={
+                          canvasDragState.draggingId === section.worktree.id
+                        }
+                        closestEdge={
+                          canvasDragState.targetId === section.worktree.id
+                            ? canvasDragState.closestEdge
+                            : null
+                        }
+                        projectId={projectId}
+                      >
+                        <WorktreeSetupCard
+                          ref={el => {
+                            cardRefs.current[currentIndex] = el
+                          }}
+                          worktree={section.worktree}
+                          layout="list"
+                          isSelected={selectedIndex === currentIndex}
+                          onSelect={() =>
+                            handleSelectedIndexChange(currentIndex)
+                          }
+                        />
+                      </SortableCanvasWorktreeSection>
+                    )
+                  }
+                  const planQueue = planQueueByWorktreeId.get(
+                    section.worktree.id
+                  )
+                  return (
+                    <SortableCanvasWorktreeSection
+                      key={section.worktree.id}
+                      section={section}
+                      rowState={rowState}
+                      disabled={isReorderDisabled}
+                      isDragging={
+                        canvasDragState.draggingId === section.worktree.id
+                      }
+                      closestEdge={
+                        canvasDragState.targetId === section.worktree.id
+                          ? canvasDragState.closestEdge
+                          : null
+                      }
+                      projectId={projectId}
+                      canDropRow={canDropCanvasRow}
+                    >
+                      <div
+                        ref={el => {
+                          cardRefs.current[currentIndex] = el
+                        }}
+                      >
+                        <WorktreeSectionHeader
+                          worktree={section.worktree}
+                          projectId={projectId}
+                          defaultBranch={project.default_branch}
+                          openPRs={openPRs}
+                          cards={section.cards}
+                          showDetails={true}
+                          compact={isMobile}
+                          isSelected={selectedIndex === currentIndex}
+                          rowIndex={currentIndex}
+                          onRowClick={handleSectionRowClick}
+                          onDiffClick={setCanvasDiffRequest}
+                          onSetLabels={
+                            showWorktreeLabelContextMenu
+                              ? openWorktreeLabelModal
+                              : undefined
+                          }
+                          worktreeGroups={worktreeGroups}
+                          onMoveToGroup={
+                            showWorktreeLabelContextMenu
+                              ? handleMoveWorktreeToGroup
+                              : undefined
+                          }
+                          onResolveConflicts={handleCanvasResolveConflicts}
+                          disableTextSelection={disableWorktreeTextSelection}
+                          planQueue={planQueue}
+                          markDefinitions={markDefinitions}
+                        />
+                        {activeFilterTab === 'auto_fix' && (
+                          <MrRobotProgress
+                            row={
+                              robotRows.find(
+                                row => row.worktree.id === section.worktree.id
+                              ) ?? section
+                            }
+                            onOpen={(worktree, card) => {
+                              if (card)
+                                useChatStore
+                                  .getState()
+                                  .setActiveSession(
+                                    worktree.id,
+                                    card.session.id
+                                  )
+                              openWorktreeModal(worktree.id, worktree.path)
+                            }}
+                          />
+                        )}
+                        {planQueue && (
+                          <PlanQueueProgress
+                            worktree={section.worktree}
+                            summary={planQueue}
+                            compact={isMobile}
+                          />
+                        )}
+                      </div>
+                    </SortableCanvasWorktreeSection>
+                  )
+                }
+
+                // Grouped mode: user groups replace the row-state headers.
+                if (groupedList) {
+                  return groupedList.items.map(item => {
+                    if (item.kind === 'row') {
+                      return renderRow(
+                        item.section,
+                        canvasRowStateById.get(item.section.worktree.id) ??
+                          'idle'
+                      )
+                    }
+                    const memberStates = item.memberIds.map(id =>
+                      canvasRowStateById.get(id)
+                    )
+                    return (
+                      <CanvasWorktreeGroupHeader
+                        key={`group-${item.collapseKey}`}
+                        projectId={projectId}
+                        groupId={item.group?.id ?? null}
+                        name={item.group?.name ?? 'Ungrouped'}
+                        collapseKey={item.collapseKey}
+                        isCollapsed={item.isCollapsed}
+                        count={item.memberIds.length}
+                        status={
+                          memberStates.includes('waiting')
+                            ? 'waiting'
+                            : memberStates.includes('running')
+                              ? 'running'
+                              : null
+                        }
+                        compact={isMobile}
+                      />
+                    )
+                  })
+                }
+
                 let previousRowState: CanvasRowState | null = null
                 return worktreeSections.map(section => {
-                  const currentIndex = cardIndex++
                   const rowState =
                     canvasRowStateById.get(section.worktree.id) ?? 'idle'
                   const groupHeader =
@@ -3706,119 +4094,10 @@ export function ProjectCanvasView({
                       </div>
                     ) : null
                   previousRowState = rowState
-                  const isReorderDisabled =
-                    !canvasReorderEnabled ||
-                    reorderWorktrees.isPending ||
-                    !canManuallyReorderWorktree(section.worktree)
-
-                  if (section.isPending) {
-                    return (
-                      <Fragment key={section.worktree.id}>
-                        {groupHeader}
-                        <SortableCanvasWorktreeSection
-                          section={section}
-                          rowState={rowState}
-                          disabled={true}
-                          isDragging={
-                            canvasDragState.draggingId === section.worktree.id
-                          }
-                          closestEdge={
-                            canvasDragState.targetId === section.worktree.id
-                              ? canvasDragState.closestEdge
-                              : null
-                          }
-                          projectId={projectId}
-                        >
-                          <WorktreeSetupCard
-                            ref={el => {
-                              cardRefs.current[currentIndex] = el
-                            }}
-                            worktree={section.worktree}
-                            layout="list"
-                            isSelected={selectedIndex === currentIndex}
-                            onSelect={() =>
-                              handleSelectedIndexChange(currentIndex)
-                            }
-                          />
-                        </SortableCanvasWorktreeSection>
-                      </Fragment>
-                    )
-                  }
-                  const planQueue = planQueueByWorktreeId.get(
-                    section.worktree.id
-                  )
                   return (
                     <Fragment key={section.worktree.id}>
                       {groupHeader}
-                      <SortableCanvasWorktreeSection
-                        section={section}
-                        rowState={rowState}
-                        disabled={isReorderDisabled}
-                        isDragging={
-                          canvasDragState.draggingId === section.worktree.id
-                        }
-                        closestEdge={
-                          canvasDragState.targetId === section.worktree.id
-                            ? canvasDragState.closestEdge
-                            : null
-                        }
-                        projectId={projectId}
-                      >
-                        <div
-                          ref={el => {
-                            cardRefs.current[currentIndex] = el
-                          }}
-                        >
-                          <WorktreeSectionHeader
-                            worktree={section.worktree}
-                            projectId={projectId}
-                            defaultBranch={project.default_branch}
-                            openPRs={openPRs}
-                            cards={section.cards}
-                            showDetails={true}
-                            compact={isMobile}
-                            isSelected={selectedIndex === currentIndex}
-                            rowIndex={currentIndex}
-                            onRowClick={handleSectionRowClick}
-                            onDiffClick={setCanvasDiffRequest}
-                            onSetLabels={
-                              showWorktreeLabelContextMenu
-                                ? openWorktreeLabelModal
-                                : undefined
-                            }
-                            onResolveConflicts={handleCanvasResolveConflicts}
-                            disableTextSelection={disableWorktreeTextSelection}
-                            planQueue={planQueue}
-                            markDefinitions={markDefinitions}
-                          />
-                          {activeFilterTab === 'auto_fix' && (
-                            <MrRobotProgress
-                              row={
-                                robotRows.find(
-                                  row => row.worktree.id === section.worktree.id
-                                ) ?? section
-                              }
-                              onOpen={(worktree, card) => {
-                                if (card)
-                                  useChatStore
-                                    .getState()
-                                    .setActiveSession(
-                                      worktree.id,
-                                      card.session.id
-                                    )
-                                openWorktreeModal(worktree.id, worktree.path)
-                              }}
-                            />
-                          )}
-                          {planQueue && (
-                            <PlanQueueProgress
-                              worktree={section.worktree}
-                              summary={planQueue}
-                              compact={isMobile}
-                            />
-                          )}
-                        </div>
-                      </SortableCanvasWorktreeSection>
+                      {renderRow(section, rowState)}
                     </Fragment>
                   )
                 })
