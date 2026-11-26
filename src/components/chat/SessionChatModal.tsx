@@ -1227,54 +1227,52 @@ export const SessionChatModal = memo(function SessionChatModal({
 
   // Bulk close from a tab menu: other tabs, or the tabs after the target, in
   // the visible order. Busy sessions stay open; one confirm covers the batch.
-  const closeTabGroup = useCallback(
-    (target: Session, scope: 'others' | 'right') => {
-      const ids = new Set(
-        tabIdsToClose(
-          sortedCards.map(card => card.session.id),
-          target.id,
-          scope
-        )
+  // Plain function: this runs after the early return above, so it cannot be a hook.
+  const closeTabGroup = (target: Session, scope: 'others' | 'right') => {
+    const ids = new Set(
+      tabIdsToClose(
+        sortedCards.map(card => card.session.id),
+        target.id,
+        scope
       )
-      const candidates = sortedCards.filter(card => ids.has(card.session.id))
-      const closable = candidates
-        .filter(card => !isSessionBusy(card.status))
-        .map(card => card.session)
-      const keptOpen = candidates.length - closable.length
-      if (keptOpen > 0) {
-        toast.info(
-          `Kept ${keptOpen} running session${keptOpen === 1 ? '' : 's'} open`
-        )
-      }
-      const [first, ...rest] = closable
-      if (!first) return
+    )
+    const candidates = sortedCards.filter(card => ids.has(card.session.id))
+    const closable = candidates
+      .filter(card => !isSessionBusy(card.status))
+      .map(card => card.session)
+    const keptOpen = candidates.length - closable.length
+    if (keptOpen > 0) {
+      toast.info(
+        `Kept ${keptOpen} running session${keptOpen === 1 ? '' : 's'} open`
+      )
+    }
+    const [first, ...rest] = closable
+    if (!first) return
 
-      const run = () => {
-        const { activeSessionIds, setActiveSession } = useChatStore.getState()
-        const activeId = activeSessionIds[worktreeId]
-        if (activeId && closable.some(s => s.id === activeId)) {
-          setActiveSession(worktreeId, target.id)
-        }
-        void closeSessions(
-          worktreeId,
-          worktreePath,
-          first.id,
-          rest.map(s => s.id)
-        )
+    const run = () => {
+      const { activeSessionIds, setActiveSession } = useChatStore.getState()
+      const activeId = activeSessionIds[worktreeId]
+      if (activeId && closable.some(s => s.id === activeId)) {
+        setActiveSession(worktreeId, target.id)
       }
-      const { inputDrafts } = useChatStore.getState()
-      if (closable.every(s => isSessionEmpty(s, inputDrafts))) {
-        run()
-        return
-      }
-      setCloseConfirmMode('session')
-      setCloseSubSessionCount(0)
-      setCloseSessionCount(closable.length)
-      pendingCloseAction.current = run
-      setCloseConfirmOpen(true)
-    },
-    [sortedCards, closeSessions, worktreeId, worktreePath]
-  )
+      void closeSessions(
+        worktreeId,
+        worktreePath,
+        first.id,
+        rest.map(s => s.id)
+      )
+    }
+    const { inputDrafts } = useChatStore.getState()
+    if (closable.every(s => isSessionEmpty(s, inputDrafts))) {
+      run()
+      return
+    }
+    setCloseConfirmMode('session')
+    setCloseSubSessionCount(0)
+    setCloseSessionCount(closable.length)
+    pendingCloseAction.current = run
+    setCloseConfirmOpen(true)
+  }
 
   const renderSessionMenuItems = (session: Session) => {
     const index = sortedCards.findIndex(card => card.session.id === session.id)
