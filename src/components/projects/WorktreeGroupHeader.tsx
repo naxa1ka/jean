@@ -1,6 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { toast } from 'sonner'
+import {
+  draggable,
+  dropTargetForElements,
+} from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
+import { combine } from '@atlaskit/pragmatic-drag-and-drop/combine'
+import {
+  attachClosestEdge,
+  type Edge,
+} from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge'
 import { FolderPlus, Pencil, Trash2 } from '@/components/icons/reicon'
 import {
   ContextMenu,
@@ -10,6 +19,13 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { StatusIndicator } from '@/components/ui/status-indicator'
+import { DropIndicator } from '@/components/drag-and-drop/DropIndicator'
+import {
+  DRAG_TYPE_WORKTREE_GROUP,
+  DROP_TYPE_WORKTREE_GROUP_HEADER,
+  UNGROUPED_GROUP_ID,
+  type WorktreeDragData,
+} from '@/lib/drag-and-drop/types'
 import { cn } from '@/lib/utils'
 import { worktreeGroupCollapseKey } from '@/lib/worktree-groups'
 import { getWorktreeGroupActivity } from '@/lib/worktree-groups-activity'
@@ -24,8 +40,8 @@ import type { Worktree, WorktreeGroup } from '@/types/projects'
 import { DisclosureChevron } from './DisclosureChevron'
 import { useCreateWorktreeGroupAndRename } from './useCreateWorktreeGroupAndRename'
 
-/** `data-worktree-group-id` of the Ungrouped header. */
-export const UNGROUPED_GROUP_DOM_ID = 'ungrouped'
+/** Drop highlight of a header: worktree "into group", or a group-reorder edge. */
+export type WorktreeGroupHeaderHighlight = 'combine' | Edge | null
 
 interface WorktreeGroupHeaderProps {
   projectId: string
@@ -33,7 +49,16 @@ interface WorktreeGroupHeaderProps {
   group: WorktreeGroup | null
   worktrees: readonly Worktree[]
   sessionsByWorktreeId: ReadonlyMap<string, WorktreeSessions>
-  scope: string
+  scope: WorktreeDragData['scope']
+  /** No drag wiring when true (touch, mutation in flight, no drag support). */
+  dragDisabled?: boolean
+  /** Stable: whether the dragged item (pdnd source data) may drop on this header. */
+  canDropOnHeader?: (
+    sourceData: Record<string, unknown>,
+    groupId: string
+  ) => boolean
+  highlight?: WorktreeGroupHeaderHighlight
+  isDragging?: boolean
 }
 
 export const WorktreeGroupHeader = memo(function WorktreeGroupHeader({
@@ -42,7 +67,12 @@ export const WorktreeGroupHeader = memo(function WorktreeGroupHeader({
   worktrees,
   sessionsByWorktreeId,
   scope,
+  dragDisabled = true,
+  canDropOnHeader,
+  highlight = null,
+  isDragging = false,
 }: WorktreeGroupHeaderProps) {
+  const groupDomId = group?.id ?? UNGROUPED_GROUP_ID
   const collapseKey = worktreeGroupCollapseKey(projectId, group?.id ?? null)
   const isCollapsed = useProjectsStore(state =>
     state.collapsedWorktreeGroupKeys.has(collapseKey)
@@ -146,6 +176,47 @@ export const WorktreeGroupHeader = memo(function WorktreeGroupHeader({
     void createGroup(projectId)
   }, [createGroup, projectId])
 
+  const headerRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const element = headerRef.current
+    if (!element || dragDisabled || !canDropOnHeader) return
+    const data = {
+      projectId,
+      groupId: groupDomId,
+      scope,
+    }
+    const cleanups = [
+      dropTargetForElements({
+        element,
+        canDrop: ({ source }) => canDropOnHeader(source.data, groupDomId),
+        getData: ({ input, element }) =>
+          attachClosestEdge(
+            { type: DROP_TYPE_WORKTREE_GROUP_HEADER, ...data },
+            { input, element, allowedEdges: ['top', 'bottom'] }
+          ),
+      }),
+    ]
+    // Ungrouped is never dragged; renaming keeps text selection.
+    if (group && !isEditing) {
+      cleanups.push(
+        draggable({
+          element,
+          canDrag: () => !isEditing,
+          getInitialData: () => ({ type: DRAG_TYPE_WORKTREE_GROUP, ...data }),
+        })
+      )
+    }
+    return combine(...cleanups)
+  }, [
+    canDropOnHeader,
+    dragDisabled,
+    group,
+    groupDomId,
+    isEditing,
+    projectId,
+    scope,
+  ])
+
   const status = activity.waiting
     ? 'waiting'
     : activity.running
@@ -154,17 +225,22 @@ export const WorktreeGroupHeader = memo(function WorktreeGroupHeader({
 
   const header = (
     <div
+      ref={headerRef}
       role="button"
       tabIndex={0}
       aria-expanded={!isCollapsed}
       aria-label={`${name} group, ${worktrees.length} worktrees`}
-      data-worktree-group-id={group?.id ?? UNGROUPED_GROUP_DOM_ID}
+      data-worktree-group-id={groupDomId}
       data-worktree-group-project-id={projectId}
       data-worktree-group-scope={scope}
       className={cn(
-        'group flex cursor-pointer select-none items-center gap-1 px-2 py-1 text-xs font-medium text-muted-foreground/80 transition-colors duration-150',
-        'hover:bg-accent/50 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+        'group relative flex cursor-pointer select-none items-center gap-1 px-2 py-1 text-xs font-medium text-muted-foreground/80 transition-[color,background-color,opacity] duration-150',
+        'hover:bg-accent/50 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        highlight === 'combine' &&
+          'bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50',
+        isDragging && 'opacity-40'
       )}
+      data-drop-highlight={highlight === 'combine' ? 'combine' : undefined}
       onClick={toggle}
       onDoubleClick={e => {
         e.stopPropagation()
@@ -172,6 +248,10 @@ export const WorktreeGroupHeader = memo(function WorktreeGroupHeader({
       }}
       onKeyDown={handleHeaderKeyDown}
     >
+      <DropIndicator
+        edge={highlight === 'combine' ? null : highlight}
+        insetClassName="left-2 right-2"
+      />
       <DisclosureChevron open={!isCollapsed} className="size-3 shrink-0" />
       {isEditing ? (
         <input

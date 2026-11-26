@@ -29,6 +29,7 @@ vi.mock('@/services/projects', () => {
     useDeleteWorktreeGroup: mutation,
     useCreateWorktreeGroup: mutation,
     useMoveWorktreeToGroup: mutation,
+    useReorderWorktreeGroups: mutation,
   }
 })
 
