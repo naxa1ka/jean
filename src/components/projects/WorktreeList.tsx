@@ -22,14 +22,12 @@ import { useIsTouchDevice } from '@/hooks/use-touch-device'
 import { chatQueryKeys } from '@/services/chat'
 import {
   isTauri,
+  useMoveWorktreeToGroup,
+  useReorderWorktreeGroups,
   useReorderWorktrees,
   WORKTREE_GROUP_MUTATION_KEY,
 } from '@/services/projects'
-import {
-  groupWorktrees,
-  isSameWorktreeGroup,
-  worktreeGroupCollapseKey,
-} from '@/lib/worktree-groups'
+import { groupWorktrees, worktreeGroupCollapseKey } from '@/lib/worktree-groups'
 import { useWorktreeGroupsSupported } from '@/lib/worktree-groups-level'
 import { useProjectsStore } from '@/store/projects-store'
 import { useChatStore } from '@/store/chat-store'
@@ -44,22 +42,26 @@ import { WorktreeItemSkeleton } from './WorktreeItemSkeleton'
 import { WorktreeGroupHeader } from './WorktreeGroupHeader'
 import {
   DRAG_SCOPE_WORKTREE_LIST,
+  DRAG_TYPE_WORKTREE,
   isWorktreeDragData,
+  isWorktreeGroupDragData,
+  UNGROUPED_GROUP_ID,
 } from '@/lib/drag-and-drop/types'
-import { reorderWithClosestEdge } from '@/lib/drag-and-drop/reorder'
 import { announceDrag } from '@/lib/drag-and-drop/live-region'
 import { DropIndicator } from '@/components/drag-and-drop/DropIndicator'
 import {
   applyWorktreeDropSnapshot,
   emptyWorktreeDropSnapshot,
-  getSnapshotFromWorktreeDropTarget,
-  getSnapshotFromWorktreeElement,
-  getWorktreeDropTargetForScope,
-  getWorktreeElementFromEventTarget,
-  getWorktreeElementFromPoint,
+  getSnapshotFromWorktreeListElement,
+  getWorktreeListDropSnapshot,
+  getWorktreeListElement,
   type WorktreeDropSnapshot,
   type WorktreeReorderDragState,
 } from '@/lib/drag-and-drop/worktree-reorder-ux'
+import {
+  resolveWorktreeGroupDrop,
+  type WorktreeGroupDropSource,
+} from '@/lib/drag-and-drop/worktree-group-drop'
 
 interface SortableWorktreeProps {
   worktree: Worktree
@@ -70,8 +72,8 @@ interface SortableWorktreeProps {
   isDragging: boolean
   closestEdge: Edge | null
   markDefinitions: readonly MarkDefinition[]
-  /** Stable: whether a dragged worktree may drop on this row */
-  canDropOn: (sourceId: string, targetId: string) => boolean
+  /** Stable: whether the dragged item (pdnd source data) may drop on this row */
+  canDropOn: (sourceData: Record<string, unknown>, targetId: string) => boolean
 }
 
 const SortableWorktree = memo(function SortableWorktree({
@@ -101,19 +103,12 @@ const SortableWorktree = memo(function SortableWorktree({
       dropTargetForElements({
         element,
         canDrop: ({ source }) => {
-          return (
-            !disabled &&
-            isWorktreeDragData(source.data) &&
-            source.data.projectId === projectId &&
-            source.data.scope === DRAG_SCOPE_WORKTREE_LIST &&
-            source.data.worktreeId !== worktree.id &&
-            canDropOn(source.data.worktreeId, worktree.id)
-          )
+          return !disabled && canDropOn(source.data, worktree.id)
         },
         getData: ({ input, element }) => {
           return attachClosestEdge(
             {
-              type: 'worktree-section',
+              type: DRAG_TYPE_WORKTREE,
               projectId,
               worktreeId: worktree.id,
               scope: DRAG_SCOPE_WORKTREE_LIST,
@@ -134,7 +129,7 @@ const SortableWorktree = memo(function SortableWorktree({
           element,
           canDrag: () => !disabled,
           getInitialData: () => ({
-            type: 'worktree-section',
+            type: DRAG_TYPE_WORKTREE,
             projectId,
             worktreeId: worktree.id,
             scope: DRAG_SCOPE_WORKTREE_LIST,
@@ -193,6 +188,23 @@ interface WorktreeListProps {
 
 const NO_GROUPS: readonly WorktreeGroup[] = []
 
+type DraggingKind = WorktreeGroupDropSource['kind']
+
+interface ListDragState extends WorktreeReorderDragState {
+  draggingKind: DraggingKind
+}
+
+const IDLE_DRAG_STATE: ListDragState = {
+  draggingId: null,
+  draggingKind: 'worktree',
+  targetId: null,
+  closestEdge: null,
+}
+
+function sameIds(a: readonly string[], b: readonly string[]) {
+  return a.length === b.length && a.every((id, index) => id === b[index])
+}
+
 export function WorktreeList({
   projectId,
   projectPath,
@@ -202,6 +214,9 @@ export function WorktreeList({
   groups = NO_GROUPS,
 }: WorktreeListProps) {
   const reorderWorktrees = useReorderWorktrees()
+  const moveWorktreeToGroup = useMoveWorktreeToGroup()
+  const reorderWorktreeGroups = useReorderWorktreeGroups()
+  const containerRef = useRef<HTMLDivElement | null>(null)
   const groupsSupported = useWorktreeGroupsSupported(serverId)
   const activeGroups = groupsSupported && groups.length > 0 ? groups : NO_GROUPS
   const isGroupMutating =
@@ -322,245 +337,308 @@ export function WorktreeList({
     [sortedWorktrees]
   )
 
-  const draggableIds = useMemo(
+  // Full ordered list of reorderable rows (collapsed groups included).
+  const fullOrderedIds = useMemo(
     () =>
       sortedWorktrees.flatMap(worktree =>
-        canReorderWorktree(worktree) ? [worktree.id] : []
+        isBaseSession(worktree) || canReorderWorktree(worktree)
+          ? [worktree.id]
+          : []
       ),
     [canReorderWorktree, sortedWorktrees]
   )
 
-  const draggableIdSet = useMemo(() => new Set(draggableIds), [draggableIds])
+  const sourceFor = useCallback(
+    (kind: DraggingKind, id: string): WorktreeGroupDropSource =>
+      kind === 'group'
+        ? { kind, projectId, groupId: id }
+        : { kind, projectId, worktreeId: id },
+    [projectId]
+  )
 
-  // Reorder drops stay inside one group (moves between groups come later).
-  const isSameGroup = useCallback(
-    (sourceId: string, targetId: string) =>
-      isSameWorktreeGroup(sourceId, targetId, worktreeById, activeGroups),
-    [activeGroups, worktreeById]
+  const resolveDrop = useCallback(
+    (source: WorktreeGroupDropSource, snapshot: WorktreeDropSnapshot) => {
+      if (!snapshot.targetId) return null
+      return resolveWorktreeGroupDrop({
+        projectId,
+        fullOrderedIds,
+        worktreesById: worktreeById,
+        groups: activeGroups,
+        source,
+        target:
+          snapshot.kind === 'header'
+            ? {
+                kind: 'header',
+                projectId,
+                groupId: snapshot.groupId ?? snapshot.targetId,
+                edge: snapshot.closestEdge,
+              }
+            : {
+                kind: 'row',
+                projectId,
+                worktreeId: snapshot.targetId,
+                edge: snapshot.closestEdge,
+              },
+      })
+    },
+    [activeGroups, fullOrderedIds, projectId, worktreeById]
   )
-  const isSameGroupRef = useRef(isSameGroup)
+  const resolveDropRef = useRef(resolveDrop)
   useEffect(() => {
-    isSameGroupRef.current = isSameGroup
-  }, [isSameGroup])
-  // Stable for memoized rows; reads the latest membership.
-  const canDropOn = useCallback(
-    (sourceId: string, targetId: string) =>
-      isSameGroupRef.current(sourceId, targetId),
-    []
+    resolveDropRef.current = resolveDrop
+  }, [resolveDrop])
+
+  // pdnd source data of this list -> resolver source (null = not ours)
+  const sourceFromData = useCallback(
+    (data: Record<string, unknown>): WorktreeGroupDropSource | null => {
+      if (
+        isWorktreeDragData(data) &&
+        data.projectId === projectId &&
+        data.scope === DRAG_SCOPE_WORKTREE_LIST
+      ) {
+        return sourceFor('worktree', data.worktreeId)
+      }
+      if (
+        isWorktreeGroupDragData(data) &&
+        data.projectId === projectId &&
+        data.scope === DRAG_SCOPE_WORKTREE_LIST
+      ) {
+        return sourceFor('group', data.groupId)
+      }
+      return null
+    },
+    [projectId, sourceFor]
   )
-  const [dragState, setDragState] = useState<WorktreeReorderDragState>({
-    draggingId: null,
-    targetId: null,
-    closestEdge: null,
-  })
+
+  // Stable for memoized rows and headers; reads the latest list.
+  const canDropOn = useCallback(
+    (sourceData: Record<string, unknown>, targetId: string) => {
+      const source = sourceFromData(sourceData)
+      return (
+        source !== null &&
+        resolveDropRef.current(source, { targetId, closestEdge: 'top' }) !==
+          null
+      )
+    },
+    [sourceFromData]
+  )
+  const canDropOnHeader = useCallback(
+    (sourceData: Record<string, unknown>, groupId: string) => {
+      const source = sourceFromData(sourceData)
+      return (
+        source !== null &&
+        resolveDropRef.current(source, {
+          targetId: groupId,
+          closestEdge: 'top',
+          kind: 'header',
+          groupId,
+        }) !== null
+      )
+    },
+    [sourceFromData]
+  )
+
+  const [dragState, setDragState] = useState<ListDragState>(IDLE_DRAG_STATE)
   const latestDropTargetRef = useRef<WorktreeDropSnapshot>(
     emptyWorktreeDropSnapshot
   )
   const dragStateRef = useRef(dragState)
+  // pdnd onDrop, the document capture drop and the container drop all see
+  // the same drop: the first one commits, the others only clean up.
+  const dropHandledRef = useRef(false)
 
   useEffect(() => {
     dragStateRef.current = dragState
   }, [dragState])
 
-  const getWorktreeDropTarget = useCallback(
-    (dropTargets: { data: Record<string | symbol, unknown> }[]) =>
-      getWorktreeDropTargetForScope(dropTargets, DRAG_SCOPE_WORKTREE_LIST),
-    []
-  )
-
-  const reorderFromDrop = useCallback(
-    (activeId: string, overId: string, closestEdge: Edge | null) => {
-      if (activeId === overId) return
-      if (!isSameGroup(activeId, overId)) return
-
-      const oldIndex = draggableIds.indexOf(activeId)
-      const newIndex = draggableIds.indexOf(overId)
-
-      if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) return
-
-      const reorderedDraggableIds = reorderWithClosestEdge({
-        items: draggableIds,
-        startIndex: oldIndex,
-        indexOfTarget: newIndex,
-        closestEdgeOfTarget: closestEdge,
-      })
-      const nextDraggableIds = [...reorderedDraggableIds]
-      const fullOrderedIds = sortedWorktrees.map(worktree => {
-        if (!draggableIdSet.has(worktree.id)) return worktree.id
-        return nextDraggableIds.shift() ?? worktree.id
-      })
-
-      reorderWorktrees.mutate({
+  const commitDrop = useCallback(
+    (source: WorktreeGroupDropSource, snapshot: WorktreeDropSnapshot) => {
+      const result = resolveDrop(source, snapshot)
+      if (!result) {
+        announceDrag('Drop cancelled')
+        return
+      }
+      const switchToManualSort = worktreeSortMode !== 'manual'
+      if (result.kind === 'reorderGroups') {
+        reorderWorktreeGroups.mutate({ projectId, groupIds: result.groupIds })
+        announceDrag('Group reordered')
+        return
+      }
+      if (source.kind !== 'worktree') return
+      if (result.kind === 'reorder') {
+        if (sameIds(result.worktreeIds, fullOrderedIds)) return
+        reorderWorktrees.mutate({
+          projectId,
+          worktreeIds: result.worktreeIds,
+          switchToManualSort,
+        })
+        announceDrag('Worktree reordered')
+        return
+      }
+      moveWorktreeToGroup.mutate({
         projectId,
-        worktreeIds: fullOrderedIds.filter(id => {
-          const worktree = worktreeById.get(id)
-          return (
-            worktree != null &&
-            (isBaseSession(worktree) || canReorderWorktree(worktree))
-          )
-        }),
-        switchToManualSort: worktreeSortMode !== 'manual',
+        worktreeId: source.worktreeId,
+        groupId: result.groupId,
+        worktreeIds: result.worktreeIds,
+        switchToManualSort,
       })
-
-      announceDrag('Worktree reordered')
+      announceDrag(
+        result.groupId
+          ? 'Worktree moved to group'
+          : 'Worktree moved to Ungrouped'
+      )
     },
     [
-      canReorderWorktree,
-      draggableIdSet,
-      draggableIds,
-      isSameGroup,
+      fullOrderedIds,
+      moveWorktreeToGroup,
       projectId,
+      reorderWorktreeGroups,
       reorderWorktrees,
-      sortedWorktrees,
-      worktreeById,
+      resolveDrop,
       worktreeSortMode,
     ]
   )
 
-  const nativeDropHandledRef = useRef(false)
+  /** Clears drag state; returns the drop to commit, or null when already handled. */
+  const finishDrag = useCallback(() => {
+    const { draggingId, draggingKind } = dragStateRef.current
+    const snapshot = latestDropTargetRef.current
+    latestDropTargetRef.current = emptyWorktreeDropSnapshot
+    setDragState(IDLE_DRAG_STATE)
+    if (dropHandledRef.current || !draggingId) return null
+    dropHandledRef.current = true
+    return { source: sourceFor(draggingKind, draggingId), snapshot }
+  }, [sourceFor])
 
   useEffect(() => {
     return monitorForElements({
-      canMonitor: ({ source }) =>
-        isWorktreeDragData(source.data) &&
-        source.data.projectId === projectId &&
-        source.data.scope === DRAG_SCOPE_WORKTREE_LIST,
+      canMonitor: ({ source }) => sourceFromData(source.data) !== null,
       onDragStart: ({ source }) => {
-        if (!isWorktreeDragData(source.data)) return
+        const dragSource = sourceFromData(source.data)
+        if (!dragSource) return
         latestDropTargetRef.current = emptyWorktreeDropSnapshot
-        setDragState({
-          draggingId: source.data.worktreeId,
-          targetId: null,
-          closestEdge: null,
-        })
-        announceDrag('Started dragging worktree')
+        dropHandledRef.current = false
+        const isGroup = dragSource.kind === 'group'
+        const nextState: ListDragState = {
+          ...IDLE_DRAG_STATE,
+          draggingId: isGroup ? dragSource.groupId : dragSource.worktreeId,
+          draggingKind: dragSource.kind,
+        }
+        // Native fallbacks may fire before the next render.
+        dragStateRef.current = nextState
+        setDragState(nextState)
+        announceDrag(
+          isGroup ? 'Started dragging group' : 'Started dragging worktree'
+        )
       },
       onDropTargetChange: ({ location }) => {
-        const snapshot = getSnapshotFromWorktreeDropTarget(
-          getWorktreeDropTarget(location.current.dropTargets)
+        const snapshot = getWorktreeListDropSnapshot(
+          location.current.dropTargets,
+          DRAG_SCOPE_WORKTREE_LIST,
+          projectId
         )
         latestDropTargetRef.current = snapshot
         setDragState(state => applyWorktreeDropSnapshot(state, snapshot))
       },
       onDrag: ({ location }) => {
-        const snapshot = getSnapshotFromWorktreeDropTarget(
-          getWorktreeDropTarget(location.current.dropTargets)
+        const snapshot = getWorktreeListDropSnapshot(
+          location.current.dropTargets,
+          DRAG_SCOPE_WORKTREE_LIST,
+          projectId
         )
         latestDropTargetRef.current = snapshot
         setDragState(state => applyWorktreeDropSnapshot(state, snapshot))
       },
-      onDrop: ({ source, location }) => {
-        if (nativeDropHandledRef.current) {
-          nativeDropHandledRef.current = false
-          return
-        }
-        setDragState({ draggingId: null, targetId: null, closestEdge: null })
-        if (!isWorktreeDragData(source.data)) return
-        const targetSnapshot = getSnapshotFromWorktreeDropTarget(
-          getWorktreeDropTarget(location.current.dropTargets)
+      onDrop: ({ location }) => {
+        const targetSnapshot = getWorktreeListDropSnapshot(
+          location.current.dropTargets,
+          DRAG_SCOPE_WORKTREE_LIST,
+          projectId
         )
-        const fallback = latestDropTargetRef.current
-        const snapshot = targetSnapshot.targetId ? targetSnapshot : fallback
-        latestDropTargetRef.current = emptyWorktreeDropSnapshot
-        const { targetId, closestEdge } = snapshot
-        if (!targetId) {
-          announceDrag('Worktree move cancelled')
-          return
+        if (targetSnapshot.targetId) {
+          latestDropTargetRef.current = targetSnapshot
         }
-        reorderFromDrop(source.data.worktreeId, targetId, closestEdge)
+        const drop = finishDrag()
+        if (drop) commitDrop(drop.source, drop.snapshot)
       },
     })
-  }, [getWorktreeDropTarget, projectId, reorderFromDrop])
+  }, [commitDrop, finishDrag, projectId, sourceFromData])
+
+  // Native HTML5 fallback: snapshot of the row / header under the pointer,
+  // only when the resolver accepts the drop there.
+  const nativeSnapshotAt = useCallback(
+    (eventTarget: EventTarget | null, clientY: number) => {
+      const { draggingId, draggingKind } = dragStateRef.current
+      if (!draggingId) return null
+      const element = getWorktreeListElement({
+        eventTarget,
+        container: containerRef.current,
+        scope: DRAG_SCOPE_WORKTREE_LIST,
+        projectId,
+      })
+      const snapshot = getSnapshotFromWorktreeListElement({
+        element,
+        draggingId,
+        clientY,
+      })
+      const source = sourceFor(draggingKind, draggingId)
+      return resolveDropRef.current(source, snapshot) ? snapshot : null
+    },
+    [projectId, sourceFor]
+  )
 
   const handleNativeDragOver = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (!dragState.draggingId) return
-      const target = getWorktreeElementFromEventTarget({
-        eventTarget: event.target,
-        scope: DRAG_SCOPE_WORKTREE_LIST,
-      })
-      const snapshot = getSnapshotFromWorktreeElement({
-        element: target,
-        draggingId: dragState.draggingId,
-        clientY: event.clientY,
-      })
-      if (
-        !snapshot.targetId ||
-        !canDropOn(dragState.draggingId, snapshot.targetId)
-      )
-        return
-
+      const snapshot = nativeSnapshotAt(event.target, event.clientY)
+      if (!snapshot) return
       event.preventDefault()
       latestDropTargetRef.current = snapshot
       setDragState(state => applyWorktreeDropSnapshot(state, snapshot))
     },
-    [canDropOn, dragState.draggingId]
+    [nativeSnapshotAt]
   )
 
   const handleNativeDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (!dragState.draggingId) return
+      if (!dragStateRef.current.draggingId) return
       event.preventDefault()
       event.stopPropagation()
-      const fallback = latestDropTargetRef.current
-      nativeDropHandledRef.current = true
-      setDragState({ draggingId: null, targetId: null, closestEdge: null })
-      latestDropTargetRef.current = emptyWorktreeDropSnapshot
-      if (fallback.targetId) {
-        reorderFromDrop(
-          dragState.draggingId,
-          fallback.targetId,
-          fallback.closestEdge
-        )
-      }
+      const drop = finishDrag()
+      if (drop) commitDrop(drop.source, drop.snapshot)
     },
-    [dragState.draggingId, reorderFromDrop]
+    [commitDrop, finishDrag]
   )
 
   const handleNativeDragEnd = useCallback(() => {
     latestDropTargetRef.current = emptyWorktreeDropSnapshot
-    setDragState({ draggingId: null, targetId: null, closestEdge: null })
+    setDragState(IDLE_DRAG_STATE)
   }, [])
 
   useEffect(() => {
     const handleDocumentDragOver = (event: DragEvent) => {
-      const draggingId = dragStateRef.current.draggingId
-      if (!draggingId) return
-      const target = getWorktreeElementFromPoint({
-        clientX: event.clientX,
-        clientY: event.clientY,
-        scope: DRAG_SCOPE_WORKTREE_LIST,
-      })
-      const snapshot = getSnapshotFromWorktreeElement({
-        element: target,
-        draggingId,
-        clientY: event.clientY,
-      })
-      if (!snapshot.targetId || !canDropOn(draggingId, snapshot.targetId))
-        return
-
+      const snapshot = nativeSnapshotAt(
+        document.elementFromPoint(event.clientX, event.clientY),
+        event.clientY
+      )
+      if (!snapshot) return
       event.preventDefault()
       latestDropTargetRef.current = snapshot
       setDragState(state => applyWorktreeDropSnapshot(state, snapshot))
     }
 
     const handleDocumentDrop = (event: DragEvent) => {
-      const draggingId = dragStateRef.current.draggingId
-      if (!draggingId) return
-      const fallback = latestDropTargetRef.current
-      if (!fallback.targetId) return
+      if (!dragStateRef.current.draggingId) return
+      if (!latestDropTargetRef.current.targetId) return
       event.preventDefault()
       event.stopPropagation()
-      nativeDropHandledRef.current = true
-      setDragState({ draggingId: null, targetId: null, closestEdge: null })
-      latestDropTargetRef.current = emptyWorktreeDropSnapshot
-      reorderFromDrop(draggingId, fallback.targetId, fallback.closestEdge)
+      const drop = finishDrag()
+      if (drop) commitDrop(drop.source, drop.snapshot)
     }
 
     const handleDocumentDragEnd = () => {
       if (!dragStateRef.current.draggingId) return
       latestDropTargetRef.current = emptyWorktreeDropSnapshot
-      setDragState({ draggingId: null, targetId: null, closestEdge: null })
+      setDragState(IDLE_DRAG_STATE)
     }
 
     document.addEventListener('dragover', handleDocumentDragOver, true)
@@ -572,7 +650,31 @@ export function WorktreeList({
       document.removeEventListener('drop', handleDocumentDrop, true)
       document.removeEventListener('dragend', handleDocumentDragEnd, true)
     }
-  }, [canDropOn, reorderFromDrop])
+  }, [commitDrop, finishDrag, nativeSnapshotAt])
+
+  // Hovering a collapsed header while dragging a worktree expands it.
+  const hoveredHeaderKey =
+    dragState.draggingId &&
+    dragState.draggingKind === 'worktree' &&
+    dragState.kind === 'header' &&
+    dragState.groupId
+      ? worktreeGroupCollapseKey(
+          projectId,
+          dragState.groupId === UNGROUPED_GROUP_ID ? null : dragState.groupId
+        )
+      : null
+  const isHoveredHeaderCollapsed =
+    hoveredHeaderKey !== null && collapsedGroupKeys.has(hoveredHeaderKey)
+  useEffect(() => {
+    if (!hoveredHeaderKey || !isHoveredHeaderCollapsed) return
+    const timeoutId = window.setTimeout(() => {
+      useProjectsStore
+        .getState()
+        .setWorktreeGroupCollapsed(hoveredHeaderKey, false)
+      announceDrag('Group expanded')
+    }, 500)
+    return () => window.clearTimeout(timeoutId)
+  }, [hoveredHeaderKey, isHoveredHeaderCollapsed])
 
   const grouped = useMemo(
     () =>
@@ -583,10 +685,15 @@ export function WorktreeList({
   )
 
   const dragDisabled =
-    isTouchDevice || reorderWorktrees.isPending || isGroupMutating
+    isTouchDevice ||
+    reorderWorktrees.isPending ||
+    moveWorktreeToGroup.isPending ||
+    reorderWorktreeGroups.isPending ||
+    isGroupMutating
 
   const renderRow = (worktree: Worktree) => {
-    const isTarget = dragState.targetId === worktree.id
+    const isTarget =
+      dragState.kind !== 'header' && dragState.targetId === worktree.id
     return (
       <SortableWorktree
         key={worktree.id}
@@ -604,23 +711,44 @@ export function WorktreeList({
   }
 
   // Rows of a collapsed group are not mounted.
-  const renderGroup = (group: WorktreeGroup | null, members: Worktree[]) => (
-    <div key={group?.id ?? 'ungrouped'}>
-      <WorktreeGroupHeader
-        projectId={projectId}
-        group={group}
-        worktrees={members}
-        sessionsByWorktreeId={sessionsByWorktreeId}
-        scope={DRAG_SCOPE_WORKTREE_LIST}
-      />
-      {!collapsedGroupKeys.has(
-        worktreeGroupCollapseKey(projectId, group?.id ?? null)
-      ) && members.map(renderRow)}
-    </div>
-  )
+  const renderGroup = (group: WorktreeGroup | null, members: Worktree[]) => {
+    const groupDomId = group?.id ?? UNGROUPED_GROUP_ID
+    const isTarget =
+      dragState.draggingId !== null &&
+      dragState.kind === 'header' &&
+      dragState.groupId === groupDomId
+    return (
+      <div key={groupDomId}>
+        <WorktreeGroupHeader
+          projectId={projectId}
+          group={group}
+          worktrees={members}
+          sessionsByWorktreeId={sessionsByWorktreeId}
+          scope={DRAG_SCOPE_WORKTREE_LIST}
+          dragDisabled={dragDisabled}
+          canDropOnHeader={canDropOnHeader}
+          highlight={
+            isTarget
+              ? dragState.draggingKind === 'worktree'
+                ? 'combine'
+                : dragState.closestEdge
+              : null
+          }
+          isDragging={
+            dragState.draggingKind === 'group' &&
+            dragState.draggingId === groupDomId
+          }
+        />
+        {!collapsedGroupKeys.has(
+          worktreeGroupCollapseKey(projectId, group?.id ?? null)
+        ) && members.map(renderRow)}
+      </div>
+    )
+  }
 
   return (
     <div
+      ref={containerRef}
       className="ml-4 border-l border-border/20 py-0.5"
       onPointerDown={event => event.stopPropagation()}
       onKeyDown={event => event.stopPropagation()}
