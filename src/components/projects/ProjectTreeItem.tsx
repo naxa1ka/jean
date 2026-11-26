@@ -3,7 +3,7 @@ import { ArrowDownUp } from '@/components/icons/reicon'
 import { DisclosureChevron } from './DisclosureChevron'
 import { ProjectAvatar } from './ProjectAvatar'
 import { cn } from '@/lib/utils'
-import type { Project } from '@/types/projects'
+import type { Project, WorktreeGroup } from '@/types/projects'
 import { isBaseSession } from '@/types/projects'
 import { useProjectsStore } from '@/store/projects-store'
 import { useChatStore } from '@/store/chat-store'
@@ -24,6 +24,8 @@ import {
 import { WorktreeList } from './WorktreeList'
 import { ProjectContextMenu } from './ProjectContextMenu'
 import { CollapsedCountBadge } from './CollapsedCountBadge'
+
+const EMPTY_GROUPS: WorktreeGroup[] = []
 
 interface ProjectTreeItemProps {
   project: Project
@@ -329,6 +331,8 @@ export function ProjectTreeItem({ project }: ProjectTreeItemProps) {
           projectPath={project.path}
           worktrees={worktrees}
           defaultBranch={project.default_branch}
+          serverId={project.serverId}
+          groups={project.worktree_groups ?? EMPTY_GROUPS}
         />
       )}
     </div>

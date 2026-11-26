@@ -49,18 +49,17 @@ import {
 } from '@/services/chat'
 import { useQueryClient } from '@tanstack/react-query'
 import { useHoverIntent } from '@/hooks/useHoverIntent'
-import {
-  isAskUserQuestion,
-  isPlanToolCall,
-  NO_SESSION_LABELS,
-  type Session,
-} from '@/types/chat'
+import { NO_SESSION_LABELS, type Session } from '@/types/chat'
 import {
   createSessionCardDataCache,
   groupCardsByStatus,
   statusConfig,
 } from '@/components/chat/session-card-utils'
 import { useCanvasStoreState } from '@/components/chat/hooks/useCanvasStoreState'
+import {
+  getLiveWaiting,
+  getPersistedWaiting,
+} from '@/lib/worktree-groups-activity'
 import { useGitStatus, performGitSync } from '@/services/git-status'
 import {
   Tooltip,
@@ -516,138 +515,31 @@ export const WorktreeItem = memo(function WorktreeItem({
     finishedSubSessionIds?: string[]
   } | null>(null)
 
-  // Check if any session has streaming AskUserQuestion waiting (blinks).
-  // Return primitive booleans from the store selector so each sidebar row avoids
-  // subscribing to the full activeToolCalls/sessionWorktreeMap objects.
-  const isStreamingWaitingQuestion = useChatStore(state => {
-    for (const [sessionId, toolCalls] of Object.entries(
-      state.activeToolCalls
-    )) {
-      if (state.sessionWorktreeMap[sessionId] !== worktree.id) continue
-      if (
-        toolCalls.some(
-          tc =>
-            isAskUserQuestion(tc) && !state.isQuestionAnswered(sessionId, tc.id)
-        )
-      ) {
-        return true
-      }
-    }
-    return false
-  })
+  // Waiting from live store state (streaming AskUserQuestion / plan, explicit
+  // waits). Return primitive booleans from the store selector so each sidebar
+  // row avoids subscribing to the full activeToolCalls/sessionWorktreeMap.
+  const isLiveWaitingQuestion = useChatStore(
+    state => getLiveWaiting(state, id => id === worktree.id).question
+  )
+  const isLiveWaitingPlan = useChatStore(
+    state => getLiveWaiting(state, id => id === worktree.id).plan
+  )
 
-  // Check if any session has streaming ExitPlanMode waiting (solid)
-  const isStreamingWaitingPlan = useChatStore(state => {
-    for (const [sessionId, toolCalls] of Object.entries(
-      state.activeToolCalls
-    )) {
-      if (state.sessionWorktreeMap[sessionId] !== worktree.id) continue
-      if (
-        !(state.sendingSessionIds[sessionId] ?? false) &&
-        toolCalls.some(
-          tc =>
-            isPlanToolCall(tc) && !state.isQuestionAnswered(sessionId, tc.id)
-        )
-      ) {
-        return true
-      }
-    }
-    return false
-  })
-
-  // Check if any session has unanswered AskUserQuestion in persisted messages (blinks)
-  const hasPendingQuestion = useMemo(() => {
-    const sessions = sessionsData?.sessions ?? []
-    for (const session of sessions) {
-      // Skip sessions that are currently streaming (handled by isStreamingWaitingQuestion)
-      if (useChatStore.getState().sendingSessionIds[session.id]) continue
-
-      // Find last assistant message by iterating from end (avoids array copy from .reverse()).
-      // A later user message means its questions were answered (matches MessageItem).
-      let lastAssistantMsg = null
-      for (let i = session.messages.length - 1; i >= 0; i--) {
-        const role = session.messages[i]?.role
-        if (role === 'user') break
-        if (role === 'assistant') {
-          lastAssistantMsg = session.messages[i]
-          break
-        }
-      }
-      if (
-        lastAssistantMsg?.tool_calls?.some(
-          tc =>
-            isAskUserQuestion(tc) && !answeredQuestions[session.id]?.has(tc.id)
-        )
-      ) {
-        return true
-      }
-    }
-    return false
-  }, [sessionsData?.sessions, sendingSessionKey, answeredQuestions])
-
-  // Check if any session has unanswered ExitPlanMode in persisted messages (solid)
-  // Uses plan_approved / approved_plan_message_ids (matching session-card-utils.tsx)
-  const hasPendingPlan = useMemo(() => {
-    const sessions = sessionsData?.sessions ?? []
-    for (const session of sessions) {
-      // Skip sessions that are currently streaming (handled by isStreamingWaitingPlan)
-      if (useChatStore.getState().sendingSessionIds[session.id]) continue
-
-      const approvedPlanIds = new Set(session.approved_plan_message_ids ?? [])
-
-      // Find last assistant message by iterating from end (avoids array copy from .reverse())
-      for (let i = session.messages.length - 1; i >= 0; i--) {
-        const msg = session.messages[i]
-        if (msg?.role === 'assistant') {
-          if (
-            msg.tool_calls?.some(isPlanToolCall) &&
-            !msg.plan_approved &&
-            !approvedPlanIds.has(msg.id)
-          ) {
-            return true
-          }
-          break
-        }
-      }
-    }
-    return false
-  }, [sessionsData?.sessions, sendingSessionKey])
-
-  // Check if any session is explicitly waiting for user input
-  const isExplicitlyWaiting = useChatStore(state => {
-    for (const [sessionId, isWaiting] of Object.entries(
-      state.waitingForInputSessionIds
-    )) {
-      if (isWaiting && state.sessionWorktreeMap[sessionId] === worktree.id) {
-        return true
-      }
-    }
-    return false
-  })
-
-  // Check for persisted waiting state from session metadata (fallback when messages not loaded)
-  const hasPersistedWaitingQuestion = useMemo(() => {
-    const sessions = sessionsData?.sessions ?? []
-    return sessions.some(
-      s => s.waiting_for_input && s.waiting_for_input_type === 'question'
-    )
-  }, [sessionsData?.sessions])
-
-  const hasPersistedWaitingPlan = useMemo(() => {
-    const sessions = sessionsData?.sessions ?? []
-    return sessions.some(
-      s => s.waiting_for_input && s.waiting_for_input_type === 'plan'
-    )
-  }, [sessionsData?.sessions])
+  // Waiting from persisted sessions (unanswered question / plan, saved flag).
+  // `sendingSessionKey` recomputes it when this worktree's sending set changes.
+  const persistedWaiting = useMemo(
+    () =>
+      getPersistedWaiting(
+        sessionsData?.sessions ?? [],
+        useChatStore.getState().sendingSessionIds,
+        answeredQuestions
+      ),
+    [sessionsData?.sessions, sendingSessionKey, answeredQuestions]
+  )
 
   // Question waiting (blinks) vs plan waiting (solid)
-  const isWaitingQuestion =
-    isStreamingWaitingQuestion ||
-    hasPendingQuestion ||
-    isExplicitlyWaiting ||
-    hasPersistedWaitingQuestion
-  const isWaitingPlan =
-    isStreamingWaitingPlan || hasPendingPlan || hasPersistedWaitingPlan
+  const isWaitingQuestion = isLiveWaitingQuestion || persistedWaiting.question
+  const isWaitingPlan = isLiveWaitingPlan || persistedWaiting.plan
 
   // Check if any session in this worktree is in review state (done, needs user review)
   const isReviewing = useChatStore(state => {

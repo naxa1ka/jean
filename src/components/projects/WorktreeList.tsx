@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useQueries } from '@tanstack/react-query'
+import { useIsMutating, useQueries } from '@tanstack/react-query'
 import {
   draggable,
   dropTargetForElements,
@@ -10,13 +10,27 @@ import {
   attachClosestEdge,
   type Edge,
 } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge'
-import { isBaseSession, type Worktree } from '@/types/projects'
+import {
+  isBaseSession,
+  type Worktree,
+  type WorktreeGroup,
+} from '@/types/projects'
 import type { WorktreeSessions } from '@/types/chat'
 import { invoke } from '@/lib/transport'
 import { cn } from '@/lib/utils'
 import { useIsTouchDevice } from '@/hooks/use-touch-device'
 import { chatQueryKeys } from '@/services/chat'
-import { isTauri, useReorderWorktrees } from '@/services/projects'
+import {
+  isTauri,
+  useReorderWorktrees,
+  WORKTREE_GROUP_MUTATION_KEY,
+} from '@/services/projects'
+import {
+  groupWorktrees,
+  isSameWorktreeGroup,
+  worktreeGroupCollapseKey,
+} from '@/lib/worktree-groups'
+import { useWorktreeGroupsSupported } from '@/lib/worktree-groups-level'
 import { useProjectsStore } from '@/store/projects-store'
 import { useChatStore } from '@/store/chat-store'
 import { useMarkDefinitions } from '@/lib/marks'
@@ -27,6 +41,7 @@ import {
 } from './worktree-sort-utils'
 import { WorktreeItem } from './WorktreeItem'
 import { WorktreeItemSkeleton } from './WorktreeItemSkeleton'
+import { WorktreeGroupHeader } from './WorktreeGroupHeader'
 import {
   DRAG_SCOPE_WORKTREE_LIST,
   isWorktreeDragData,
@@ -55,6 +70,8 @@ interface SortableWorktreeProps {
   isDragging: boolean
   closestEdge: Edge | null
   markDefinitions: readonly MarkDefinition[]
+  /** Stable: whether a dragged worktree may drop on this row */
+  canDropOn: (sourceId: string, targetId: string) => boolean
 }
 
 const SortableWorktree = memo(function SortableWorktree({
@@ -66,6 +83,7 @@ const SortableWorktree = memo(function SortableWorktree({
   isDragging,
   closestEdge,
   markDefinitions,
+  canDropOn,
 }: SortableWorktreeProps) {
   const elementRef = useRef<HTMLDivElement | null>(null)
 
@@ -88,7 +106,8 @@ const SortableWorktree = memo(function SortableWorktree({
             isWorktreeDragData(source.data) &&
             source.data.projectId === projectId &&
             source.data.scope === DRAG_SCOPE_WORKTREE_LIST &&
-            source.data.worktreeId !== worktree.id
+            source.data.worktreeId !== worktree.id &&
+            canDropOn(source.data.worktreeId, worktree.id)
           )
         },
         getData: ({ input, element }) => {
@@ -125,7 +144,7 @@ const SortableWorktree = memo(function SortableWorktree({
     }
 
     return combine(...cleanupFns)
-  }, [disabled, projectId, worktree.id, worktree.status])
+  }, [canDropOn, disabled, projectId, worktree.id, worktree.status])
 
   // Pending or deleting worktrees show skeleton
   if (worktree.status === 'pending' || worktree.status === 'deleting') {
@@ -167,15 +186,29 @@ interface WorktreeListProps {
   projectPath: string
   worktrees: Worktree[]
   defaultBranch: string
+  /** Server that owns the project (undefined = current transport) */
+  serverId?: string
+  groups?: readonly WorktreeGroup[]
 }
+
+const NO_GROUPS: readonly WorktreeGroup[] = []
 
 export function WorktreeList({
   projectId,
   projectPath,
   worktrees,
   defaultBranch,
+  serverId,
+  groups = NO_GROUPS,
 }: WorktreeListProps) {
   const reorderWorktrees = useReorderWorktrees()
+  const groupsSupported = useWorktreeGroupsSupported(serverId)
+  const activeGroups = groupsSupported && groups.length > 0 ? groups : NO_GROUPS
+  const isGroupMutating =
+    useIsMutating({ mutationKey: WORKTREE_GROUP_MUTATION_KEY }) > 0
+  const collapsedGroupKeys = useProjectsStore(
+    state => state.collapsedWorktreeGroupKeys
+  )
   // Read once per list (all worktrees of a project share one server).
   const markDefinitions = useMarkDefinitions(worktrees[0]?.serverId)
   // draggable="true" makes mobile browsers lift the row on long-press, which
@@ -298,6 +331,23 @@ export function WorktreeList({
   )
 
   const draggableIdSet = useMemo(() => new Set(draggableIds), [draggableIds])
+
+  // Reorder drops stay inside one group (moves between groups come later).
+  const isSameGroup = useCallback(
+    (sourceId: string, targetId: string) =>
+      isSameWorktreeGroup(sourceId, targetId, worktreeById, activeGroups),
+    [activeGroups, worktreeById]
+  )
+  const isSameGroupRef = useRef(isSameGroup)
+  useEffect(() => {
+    isSameGroupRef.current = isSameGroup
+  }, [isSameGroup])
+  // Stable for memoized rows; reads the latest membership.
+  const canDropOn = useCallback(
+    (sourceId: string, targetId: string) =>
+      isSameGroupRef.current(sourceId, targetId),
+    []
+  )
   const [dragState, setDragState] = useState<WorktreeReorderDragState>({
     draggingId: null,
     targetId: null,
@@ -321,6 +371,7 @@ export function WorktreeList({
   const reorderFromDrop = useCallback(
     (activeId: string, overId: string, closestEdge: Edge | null) => {
       if (activeId === overId) return
+      if (!isSameGroup(activeId, overId)) return
 
       const oldIndex = draggableIds.indexOf(activeId)
       const newIndex = draggableIds.indexOf(overId)
@@ -357,6 +408,7 @@ export function WorktreeList({
       canReorderWorktree,
       draggableIdSet,
       draggableIds,
+      isSameGroup,
       projectId,
       reorderWorktrees,
       sortedWorktrees,
@@ -432,13 +484,17 @@ export function WorktreeList({
         draggingId: dragState.draggingId,
         clientY: event.clientY,
       })
-      if (!snapshot.targetId) return
+      if (
+        !snapshot.targetId ||
+        !canDropOn(dragState.draggingId, snapshot.targetId)
+      )
+        return
 
       event.preventDefault()
       latestDropTargetRef.current = snapshot
       setDragState(state => applyWorktreeDropSnapshot(state, snapshot))
     },
-    [dragState.draggingId]
+    [canDropOn, dragState.draggingId]
   )
 
   const handleNativeDrop = useCallback(
@@ -480,7 +536,8 @@ export function WorktreeList({
         draggingId,
         clientY: event.clientY,
       })
-      if (!snapshot.targetId) return
+      if (!snapshot.targetId || !canDropOn(draggingId, snapshot.targetId))
+        return
 
       event.preventDefault()
       latestDropTargetRef.current = snapshot
@@ -515,7 +572,52 @@ export function WorktreeList({
       document.removeEventListener('drop', handleDocumentDrop, true)
       document.removeEventListener('dragend', handleDocumentDragEnd, true)
     }
-  }, [reorderFromDrop])
+  }, [canDropOn, reorderFromDrop])
+
+  const grouped = useMemo(
+    () =>
+      activeGroups.length > 0
+        ? groupWorktrees(sortedWorktrees, activeGroups)
+        : null,
+    [activeGroups, sortedWorktrees]
+  )
+
+  const dragDisabled =
+    isTouchDevice || reorderWorktrees.isPending || isGroupMutating
+
+  const renderRow = (worktree: Worktree) => {
+    const isTarget = dragState.targetId === worktree.id
+    return (
+      <SortableWorktree
+        key={worktree.id}
+        worktree={worktree}
+        projectId={projectId}
+        projectPath={projectPath}
+        defaultBranch={defaultBranch}
+        disabled={dragDisabled || !canReorderWorktree(worktree)}
+        isDragging={dragState.draggingId === worktree.id}
+        closestEdge={isTarget ? dragState.closestEdge : null}
+        markDefinitions={markDefinitions}
+        canDropOn={canDropOn}
+      />
+    )
+  }
+
+  // Rows of a collapsed group are not mounted.
+  const renderGroup = (group: WorktreeGroup | null, members: Worktree[]) => (
+    <div key={group?.id ?? 'ungrouped'}>
+      <WorktreeGroupHeader
+        projectId={projectId}
+        group={group}
+        worktrees={members}
+        sessionsByWorktreeId={sessionsByWorktreeId}
+        scope={DRAG_SCOPE_WORKTREE_LIST}
+      />
+      {!collapsedGroupKeys.has(
+        worktreeGroupCollapseKey(projectId, group?.id ?? null)
+      ) && members.map(renderRow)}
+    </div>
+  )
 
   return (
     <div
@@ -526,26 +628,18 @@ export function WorktreeList({
       onDrop={handleNativeDrop}
       onDragEnd={handleNativeDragEnd}
     >
-      {sortedWorktrees.map(worktree => {
-        const isTarget = dragState.targetId === worktree.id
-        return (
-          <SortableWorktree
-            key={worktree.id}
-            worktree={worktree}
-            projectId={projectId}
-            projectPath={projectPath}
-            defaultBranch={defaultBranch}
-            disabled={
-              isTouchDevice ||
-              reorderWorktrees.isPending ||
-              !canReorderWorktree(worktree)
-            }
-            isDragging={dragState.draggingId === worktree.id}
-            closestEdge={isTarget ? dragState.closestEdge : null}
-            markDefinitions={markDefinitions}
-          />
-        )
-      })}
+      {grouped ? (
+        <>
+          {grouped.pending.map(renderRow)}
+          {grouped.base && renderRow(grouped.base)}
+          {grouped.groups.map(bucket =>
+            renderGroup(bucket.group, bucket.worktrees)
+          )}
+          {renderGroup(null, grouped.ungrouped)}
+        </>
+      ) : (
+        sortedWorktrees.map(renderRow)
+      )}
     </div>
   )
 }

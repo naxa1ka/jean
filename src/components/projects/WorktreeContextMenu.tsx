@@ -30,6 +30,7 @@ import { isTauri } from '@/services/projects'
 import { shouldShowWorktreeLabelContextMenu } from '@/components/dashboard/worktree-label-context'
 import type { useWorktreeMenuActions } from './useWorktreeMenuActions'
 import { DeleteWorktreeDialog } from './DeleteWorktreeDialog'
+import { MoveToGroupMenuItems } from './MoveToGroupMenuItems'
 
 interface WorktreeContextMenuProps {
   // Computed once by the parent (WorktreeItem) and passed in so the hook isn't
@@ -59,6 +60,11 @@ export function WorktreeContextMenu({
     runScripts,
     preferences,
     planQueueEnabled,
+    groups,
+    canMoveToGroup,
+    currentGroupId,
+    handleMoveToGroup,
+    handleMoveToNewGroup,
     handleOpenPlanQueue,
     handleRun,
     handleRunCommand,
@@ -111,6 +117,15 @@ export function WorktreeContextMenu({
             <Bookmark className="mr-2 h-4 w-4" />
             Marks…
           </ContextMenuItem>
+        )}
+
+        {canMoveToGroup && (
+          <MoveToGroupMenuItems
+            groups={groups}
+            currentGroupId={currentGroupId}
+            onMove={handleMoveToGroup}
+            onMoveToNewGroup={() => void handleMoveToNewGroup()}
+          />
         )}
 
         {(canOpenInEditor() ||

@@ -191,3 +191,4 @@ Slice files: `C:\Users\user\.claude\plans\worktree-groups-INDEX.md` and `worktre
 Exact header styling, drop-indicator look, toast copy, test file names, hook internals.
 
 ## Notes
+- Collapse keys: group UUID, or project id for Ungrouped; never scoped. (Slice 02 wins over the "scoped by server like `expanded_folder_ids`" line in Frontend.)

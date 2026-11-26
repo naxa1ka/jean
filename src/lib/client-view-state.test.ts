@@ -172,6 +172,29 @@ describe('client view state', () => {
     })
   })
 
+  it('round-trips collapsed worktree group keys and drops invalid values', () => {
+    saveClientViewState({
+      ...defaultClientViewState,
+      collapsed_worktree_group_keys: ['group-uuid', 'server-a:project-1'],
+    })
+    expect(loadClientViewState().collapsed_worktree_group_keys).toEqual([
+      'group-uuid',
+      'server-a:project-1',
+    ])
+
+    localStorage.setItem(
+      CLIENT_VIEW_STATE_STORAGE_KEY,
+      JSON.stringify({ version: 1, collapsed_worktree_group_keys: ['ok', 3] })
+    )
+    expect(loadClientViewState().collapsed_worktree_group_keys).toEqual(['ok'])
+
+    localStorage.setItem(
+      CLIENT_VIEW_STATE_STORAGE_KEY,
+      JSON.stringify({ version: 1, collapsed_worktree_group_keys: 'nope' })
+    )
+    expect(loadClientViewState().collapsed_worktree_group_keys).toEqual([])
+  })
+
   it('does not throw when client storage is unavailable', () => {
     vi.mocked(localStorage.getItem).mockImplementation(() => {
       throw new Error('blocked')

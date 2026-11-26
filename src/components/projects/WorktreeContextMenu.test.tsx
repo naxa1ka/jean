@@ -67,3 +67,38 @@ describe('WorktreeContextMenu Marks…', () => {
     expect(screen.queryByText('Marks…')).not.toBeInTheDocument()
   })
 })
+
+describe('WorktreeContextMenu Move to group', () => {
+  function openWith(patch: Partial<typeof actions>) {
+    render(
+      <WorktreeContextMenu actions={{ ...actions, ...patch }}>
+        <div>row</div>
+      </WorktreeContextMenu>
+    )
+    fireEvent.contextMenu(screen.getByText('row'))
+  }
+
+  it('moves the worktree to the chosen group', async () => {
+    const handleMoveToGroup = vi.fn()
+    openWith({
+      isBase: false,
+      canMoveToGroup: true,
+      currentGroupId: 'g1',
+      groups: [
+        { id: 'g1', name: 'Bugs', order: 0 },
+        { id: 'g2', name: 'Features', order: 1 },
+      ],
+      handleMoveToGroup,
+      handleMoveToNewGroup: vi.fn(),
+    })
+
+    await userEvent.click(await screen.findByText('Move to group'))
+    await userEvent.click(await screen.findByText('Features'))
+    expect(handleMoveToGroup).toHaveBeenCalledWith('g2')
+  })
+
+  it('has no Move to group item when the worktree cannot be grouped', () => {
+    openWith({ canMoveToGroup: false })
+    expect(screen.queryByText('Move to group')).not.toBeInTheDocument()
+  })
+})

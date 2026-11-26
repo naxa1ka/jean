@@ -15,6 +15,7 @@ describe('client view state store bridge', () => {
       expandedProjectIds: new Set(),
       expandedFolderIds: new Set(),
       expandedWorktreeIds: new Set(),
+      collapsedWorktreeGroupKeys: new Set(),
       projectAccessTimestamps: {},
       dashboardWorktreeCollapseOverrides: {},
       projectCanvasSettings: {},
@@ -48,6 +49,38 @@ describe('client view state store bridge', () => {
       'remote-1:worktree': true,
     })
     expect(scoped.browser_modal_open).toEqual({ 'remote-1:worktree': true })
+  })
+
+  it('leaves collapsed worktree group keys unscoped in the legacy migration', () => {
+    const scoped = scopeClientViewStateResources(
+      {
+        ...defaultClientViewState,
+        collapsed_worktree_group_keys: ['group-uuid', 'project'],
+      },
+      'remote-1'
+    )
+    expect(scoped.collapsed_worktree_group_keys).toEqual([
+      'group-uuid',
+      'project',
+    ])
+  })
+
+  it('captures and restores collapsed worktree groups', () => {
+    useProjectsStore.setState({
+      collapsedWorktreeGroupKeys: new Set(['group-1', 'server:project']),
+    })
+    const captured = captureClientViewState()
+    expect(captured.collapsed_worktree_group_keys).toEqual([
+      'group-1',
+      'server:project',
+    ])
+    useProjectsStore.setState({ collapsedWorktreeGroupKeys: new Set() })
+
+    applyClientViewState(captured)
+
+    expect(useProjectsStore.getState().collapsedWorktreeGroupKeys).toEqual(
+      new Set(['group-1', 'server:project'])
+    )
   })
 
   it('captures and restores scoped client display state', () => {
