@@ -229,6 +229,7 @@ import { useGlobalInputSanitizer } from '@/hooks/useGlobalInputSanitizer'
 import { useCloseSessionOrWorktreeKeybinding } from '@/services/chat'
 import { useUIStatePersistence } from '@/hooks/useUIStatePersistence'
 import { useClientViewStatePersistence } from '@/hooks/useClientViewStatePersistence'
+import { useRevealSelectedWorktreeGroup } from '@/hooks/useRevealSelectedWorktreeGroup'
 import { useSessionStatePersistence } from '@/hooks/useSessionStatePersistence'
 import { usePrWorktreeSweep } from '@/hooks/usePrWorktreeSweep'
 import { usePrStatusEvents } from '@/services/pr-status'
@@ -278,6 +279,7 @@ const UIStatePersistence = memo(function UIStatePersistence({
 }) {
   const { isInitialized } = useUIStatePersistence()
   useClientViewStatePersistence(isInitialized)
+  useRevealSelectedWorktreeGroup(isInitialized)
 
   useEffect(() => {
     // react-doctor-disable-next-line react-doctor/no-pass-data-to-parent -- intentional isolation leaf: keeps persistence hook re-renders out of MainWindow; only the one-time isInitialized flip is reported

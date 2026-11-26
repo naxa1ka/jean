@@ -50,6 +50,9 @@ interface ProjectsUIState {
   // Expansion state for folders
   expandedFolderIds: Set<string>
 
+  // Collapsed worktree groups: group UUID, or project id for Ungrouped
+  collapsedWorktreeGroupKeys: Set<string>
+
   // Last-accessed timestamps per project (for recency sorting in command palette)
   projectAccessTimestamps: Record<string, number>
 
@@ -85,6 +88,9 @@ interface ProjectsUIState {
 
   // Folder editing state (for auto-rename on create)
   editingFolderId: string | null
+
+  // Worktree group being renamed inline (for auto-rename on create)
+  editingWorktreeGroupId: string | null
 
   // Actions
   selectProject: (id: string | null) => void
@@ -135,6 +141,9 @@ interface ProjectsUIState {
   openJeanConfigWizard: (projectId: string) => void
   closeJeanConfigWizard: () => void
   setEditingFolderId: (id: string | null) => void
+  toggleWorktreeGroupCollapsed: (key: string) => void
+  setWorktreeGroupCollapsed: (key: string, collapsed: boolean) => void
+  setEditingWorktreeGroupId: (id: string | null) => void
   setProjectAccessTimestamps: (timestamps: Record<string, number>) => void
   setProjectCanvasSettings: (
     settings: Record<string, ProjectCanvasSettings>
@@ -163,6 +172,7 @@ export const useProjectsStore = create<ProjectsUIState>()(
       expandedWorktreeIds: new Set<string>(),
       dashboardWorktreeCollapseOverrides: {},
       expandedFolderIds: new Set<string>(),
+      collapsedWorktreeGroupKeys: new Set<string>(),
       projectAccessTimestamps: {},
       projectCanvasSettings: {},
       projectCanvasActiveFilters: {},
@@ -181,6 +191,7 @@ export const useProjectsStore = create<ProjectsUIState>()(
       jeanConfigWizardOpen: false,
       jeanConfigWizardProjectId: null,
       editingFolderId: null,
+      editingWorktreeGroupId: null,
 
       // Selection actions
       selectProject: id =>
@@ -654,6 +665,43 @@ export const useProjectsStore = create<ProjectsUIState>()(
             state.editingFolderId === id ? state : { editingFolderId: id },
           undefined,
           'setEditingFolderId'
+        ),
+
+      toggleWorktreeGroupCollapsed: key =>
+        set(
+          state => {
+            const next = new Set(state.collapsedWorktreeGroupKeys)
+            if (next.has(key)) next.delete(key)
+            else next.add(key)
+            return { collapsedWorktreeGroupKeys: next }
+          },
+          undefined,
+          'toggleWorktreeGroupCollapsed'
+        ),
+
+      setWorktreeGroupCollapsed: (key, collapsed) =>
+        set(
+          state => {
+            if (state.collapsedWorktreeGroupKeys.has(key) === collapsed) {
+              return state
+            }
+            const next = new Set(state.collapsedWorktreeGroupKeys)
+            if (collapsed) next.add(key)
+            else next.delete(key)
+            return { collapsedWorktreeGroupKeys: next }
+          },
+          undefined,
+          'setWorktreeGroupCollapsed'
+        ),
+
+      setEditingWorktreeGroupId: id =>
+        set(
+          state =>
+            state.editingWorktreeGroupId === id
+              ? state
+              : { editingWorktreeGroupId: id },
+          undefined,
+          'setEditingWorktreeGroupId'
         ),
 
       setProjectAccessTimestamps: timestamps =>

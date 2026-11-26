@@ -15,6 +15,8 @@ export interface ClientViewState {
   expanded_project_ids: string[]
   expanded_folder_ids: string[]
   expanded_worktree_ids: string[]
+  /** Collapsed worktree groups: group UUID, or project id for Ungrouped. Never scoped. */
+  collapsed_worktree_group_keys: string[]
   project_access_timestamps: Record<string, number>
   dashboard_worktree_collapse_overrides: Record<string, boolean>
   sidebar_server_filter: string | null
@@ -61,6 +63,7 @@ export const defaultClientViewState: ClientViewState = {
   expanded_project_ids: [],
   expanded_folder_ids: [],
   expanded_worktree_ids: [],
+  collapsed_worktree_group_keys: [],
   project_access_timestamps: {},
   dashboard_worktree_collapse_overrides: {},
   sidebar_server_filter: null,
@@ -188,6 +191,10 @@ function parseClientViewState(value: unknown): ClientViewState {
   assign('expanded_project_ids', stringArray(value.expanded_project_ids))
   assign('expanded_folder_ids', stringArray(value.expanded_folder_ids))
   assign('expanded_worktree_ids', stringArray(value.expanded_worktree_ids))
+  assign(
+    'collapsed_worktree_group_keys',
+    stringArray(value.collapsed_worktree_group_keys)
+  )
   assign(
     'project_access_timestamps',
     recordOf(value.project_access_timestamps, isNumber)

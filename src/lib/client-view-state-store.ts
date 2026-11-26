@@ -32,6 +32,7 @@ export function captureClientViewState(): ClientViewState {
     expanded_project_ids: [...projects.expandedProjectIds],
     expanded_folder_ids: [...projects.expandedFolderIds],
     expanded_worktree_ids: [...projects.expandedWorktreeIds],
+    collapsed_worktree_group_keys: [...projects.collapsedWorktreeGroupKeys],
     project_access_timestamps: projects.projectAccessTimestamps,
     dashboard_worktree_collapse_overrides:
       projects.dashboardWorktreeCollapseOverrides,
@@ -90,6 +91,7 @@ export function applyClientViewState(state: ClientViewState): void {
     expandedProjectIds: new Set(state.expanded_project_ids),
     expandedFolderIds: new Set(state.expanded_folder_ids),
     expandedWorktreeIds: new Set(state.expanded_worktree_ids),
+    collapsedWorktreeGroupKeys: new Set(state.collapsed_worktree_group_keys),
     projectAccessTimestamps: state.project_access_timestamps,
     dashboardWorktreeCollapseOverrides:
       state.dashboard_worktree_collapse_overrides,

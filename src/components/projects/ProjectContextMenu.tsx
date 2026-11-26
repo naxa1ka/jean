@@ -4,6 +4,7 @@ import {
   ExternalLink,
   Folder,
   FolderOpen,
+  FolderPlus,
   Home,
   Download,
   Plus,
@@ -38,6 +39,8 @@ import { getEditorLabel, getTerminalLabel } from '@/types/preferences'
 import { getFileManagerName } from '@/lib/platform'
 import { canOpenInFinder } from '@/lib/environment'
 import { requestImportExistingWorktree } from '@/lib/import-existing-worktree'
+import { useWorktreeGroupsSupported } from '@/lib/worktree-groups-level'
+import { useCreateWorktreeGroupAndRename } from './useCreateWorktreeGroupAndRename'
 
 interface ProjectContextMenuProps {
   project: Project
@@ -78,6 +81,14 @@ export function ProjectContextMenu({
     state => state.setNewWorktreeModalOpen
   )
   const isNested = project.parent_id !== undefined
+  const groupsSupported = useWorktreeGroupsSupported(project.serverId)
+  const createGroupAndRename = useCreateWorktreeGroupAndRename()
+  // Same rule as the project row's expand chevron (ProjectTreeItem): base
+  // session included, auto_fix worktrees excluded.
+  const expandableCount = cachedWorktrees
+    ? cachedWorktrees.filter(worktree => worktree.origin !== 'auto_fix').length
+    : (project.worktree_count ?? 0)
+  const canCreateGroup = groupsSupported && expandableCount > 0
 
   if (project.offline) return <>{children}</>
 
@@ -125,6 +136,10 @@ export function ProjectContextMenu({
     moveItem.mutate({ itemId: project.id, newParentId: undefined })
   }
 
+  const handleNewWorktreeGroup = () => {
+    void createGroupAndRename(project.id)
+  }
+
   const handleOpenSettings = () => {
     openProjectSettings(project.id)
   }
@@ -149,6 +164,13 @@ export function ProjectContextMenu({
           <Home className="mr-2 h-4 w-4" />
           Open Base Session
         </ContextMenuItem>
+
+        {canCreateGroup && (
+          <ContextMenuItem onClick={handleNewWorktreeGroup}>
+            <FolderPlus className="mr-2 h-4 w-4" />
+            New worktree group
+          </ContextMenuItem>
+        )}
 
         <ContextMenuItem onClick={handleOpenSettings}>
           <Settings className="mr-2 h-4 w-4" />

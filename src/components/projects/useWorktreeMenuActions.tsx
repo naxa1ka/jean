@@ -1,7 +1,14 @@
 import { useState, useCallback } from 'react'
-import { isBaseSession, type Worktree } from '@/types/projects'
+import { useQueryClient } from '@tanstack/react-query'
 import {
+  isBaseSession,
+  type Worktree,
+  type WorktreeGroup,
+} from '@/types/projects'
+import {
+  projectsQueryKeys,
   useArchiveWorktree,
+  useMoveWorktreeToGroup,
   useDeleteWorktree,
   useOpenWorktreeInFinder,
   useOpenWorktreeInTerminal,
@@ -13,6 +20,17 @@ import { usePreferences } from '@/services/preferences'
 import { useSessions } from '@/services/chat'
 import { useTerminalStore } from '@/store/terminal-store'
 import { useUIStore } from '@/store/ui-store'
+import { useProjectsStore } from '@/store/projects-store'
+import {
+  canGroupWorktree,
+  effectiveGroupId,
+  orderForMoveToGroupEnd,
+  persistedWorktreeOrder,
+} from '@/lib/worktree-groups'
+import { useWorktreeGroupsSupported } from '@/lib/worktree-groups-level'
+import { useCreateWorktreeGroupAndRename } from './useCreateWorktreeGroupAndRename'
+
+const NO_GROUPS: readonly WorktreeGroup[] = []
 
 interface UseWorktreeMenuActionsProps {
   worktree: Worktree
@@ -34,10 +52,61 @@ export function useWorktreeMenuActions({
   const { data: sessionsData } = useSessions(worktree.id, worktree.path)
   const { data: projects } = useProjects()
   const isBase = isBaseSession(worktree)
-  const planQueueEnabled = Boolean(
-    projects?.find(project => project.id === projectId)?.plan_queue_settings
-      ?.enabled
+  const project = projects?.find(p => p.id === projectId)
+  const planQueueEnabled = Boolean(project?.plan_queue_settings?.enabled)
+
+  // Worktree groups ("Move to group" submenu)
+  const queryClient = useQueryClient()
+  const moveToGroup = useMoveWorktreeToGroup()
+  const createGroupAndRename = useCreateWorktreeGroupAndRename()
+  const groupsSupported = useWorktreeGroupsSupported(
+    project?.serverId ?? worktree.serverId
   )
+  const groups = project?.worktree_groups ?? NO_GROUPS
+  const canMoveToGroup = groupsSupported && canGroupWorktree(worktree)
+  const currentGroupId = effectiveGroupId(worktree, groups)
+
+  const moveWorktreeToGroup = useCallback(
+    (groupId: string | null, knownGroups: readonly WorktreeGroup[]) => {
+      // Manual order: land at the end of the target group (full order).
+      // Other sort modes: position follows the sort.
+      const sortMode =
+        useProjectsStore.getState().projectCanvasSettings[projectId]
+          ?.worktreeSortMode ?? 'created'
+      let worktreeIds: string[] | undefined
+      if (sortMode === 'manual') {
+        const cached =
+          queryClient.getQueryData<Worktree[]>(
+            projectsQueryKeys.worktrees(projectId)
+          ) ?? []
+        worktreeIds = orderForMoveToGroupEnd(
+          persistedWorktreeOrder(cached),
+          new Map(cached.map(w => [w.id, w])),
+          worktree.id,
+          groupId,
+          knownGroups
+        )
+      }
+      moveToGroup.mutate({
+        projectId,
+        worktreeId: worktree.id,
+        groupId,
+        ...(worktreeIds ? { worktreeIds } : {}),
+        switchToManualSort: false,
+      })
+    },
+    [moveToGroup, projectId, queryClient, worktree.id]
+  )
+
+  const handleMoveToGroup = useCallback(
+    (groupId: string | null) => moveWorktreeToGroup(groupId, groups),
+    [groups, moveWorktreeToGroup]
+  )
+
+  const handleMoveToNewGroup = useCallback(async () => {
+    const group = await createGroupAndRename(projectId)
+    if (group) moveWorktreeToGroup(group.id, [...groups, group])
+  }, [createGroupAndRename, groups, moveWorktreeToGroup, projectId])
 
   const hasMessages = sessionsData?.sessions?.some(
     session => session.messages.length > 0
@@ -125,8 +194,13 @@ export function useWorktreeMenuActions({
     runScripts,
     preferences,
     planQueueEnabled,
+    groups,
+    canMoveToGroup,
+    currentGroupId,
 
     // Handlers
+    handleMoveToGroup,
+    handleMoveToNewGroup,
     handleRun,
     handleRunCommand,
     handleOpenPlanQueue,

@@ -20,6 +20,51 @@ describe('ProjectsStore', () => {
       gitInitModalOpen: false,
       gitInitModalPath: null,
       editingFolderId: null,
+      collapsedWorktreeGroupKeys: new Set<string>(),
+      editingWorktreeGroupId: null,
+    })
+  })
+
+  describe('worktree group collapse', () => {
+    it('toggles a group key', () => {
+      const { toggleWorktreeGroupCollapsed } = useProjectsStore.getState()
+      toggleWorktreeGroupCollapsed('group-1')
+      expect(
+        useProjectsStore.getState().collapsedWorktreeGroupKeys.has('group-1')
+      ).toBe(true)
+      toggleWorktreeGroupCollapsed('group-1')
+      expect(
+        useProjectsStore.getState().collapsedWorktreeGroupKeys.has('group-1')
+      ).toBe(false)
+    })
+
+    it('sets collapse and skips no-op updates', () => {
+      const { setWorktreeGroupCollapsed } = useProjectsStore.getState()
+      setWorktreeGroupCollapsed('group-1', true)
+      const collapsed = useProjectsStore.getState().collapsedWorktreeGroupKeys
+      expect(collapsed.has('group-1')).toBe(true)
+
+      setWorktreeGroupCollapsed('group-1', true)
+      expect(useProjectsStore.getState().collapsedWorktreeGroupKeys).toBe(
+        collapsed
+      )
+
+      setWorktreeGroupCollapsed('group-1', false)
+      const expanded = useProjectsStore.getState().collapsedWorktreeGroupKeys
+      expect(expanded.has('group-1')).toBe(false)
+      setWorktreeGroupCollapsed('group-1', false)
+      expect(useProjectsStore.getState().collapsedWorktreeGroupKeys).toBe(
+        expanded
+      )
+    })
+
+    it('sets the editing group id and skips no-op updates', () => {
+      const { setEditingWorktreeGroupId } = useProjectsStore.getState()
+      setEditingWorktreeGroupId('group-1')
+      const before = useProjectsStore.getState()
+      setEditingWorktreeGroupId('group-1')
+      expect(useProjectsStore.getState()).toBe(before)
+      expect(before.editingWorktreeGroupId).toBe('group-1')
     })
   })
 
