@@ -1058,6 +1058,56 @@ fn git_push_plain(repo_path: &str, remote: &str) -> Result<String, String> {
     }
 }
 
+/// Why `push_head_to_branch` failed.
+enum BranchPushError {
+    /// The push itself failed (stderr of git push).
+    Push(String),
+    /// Merging new remote commits into HEAD failed (for example conflicts).
+    /// Nothing was pushed.
+    Merge(String),
+}
+
+/// Push HEAD to `<remote>/<branch>` without forcing.
+///
+/// When the remote branch has commits that HEAD does not have (for example
+/// from a colleague), merge them into HEAD and push again. A force push would
+/// remove those commits from the remote.
+fn push_head_to_branch(
+    repo_path: &str,
+    remote: &str,
+    branch: &str,
+) -> Result<String, BranchPushError> {
+    let refspec = format!("HEAD:{branch}");
+    let push = |repo_path: &str| -> Result<std::process::Output, BranchPushError> {
+        wsl_aware_command("git", Some(Path::new(repo_path)))
+            .args(["push", remote, &refspec])
+            .output()
+            .map_err(|e| BranchPushError::Push(format!("Failed to run git push: {e}")))
+    };
+
+    let output = push(repo_path)?;
+    if output.status.success() {
+        return Ok(push_output_text(&output));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !git_push_rejected_as_behind(&stderr) {
+        return Err(BranchPushError::Push(stderr));
+    }
+
+    log::trace!("{remote}/{branch} has new commits; merging them before push");
+    git_pull(repo_path, branch, Some(remote)).map_err(BranchPushError::Merge)?;
+
+    let output = push(repo_path)?;
+    if output.status.success() {
+        Ok(push_output_text(&output))
+    } else {
+        Err(BranchPushError::Push(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ))
+    }
+}
+
 fn current_upstream(repo_path: &str) -> Option<(String, String)> {
     let output = wsl_aware_command("git", Some(Path::new(repo_path)))
         .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
@@ -1170,12 +1220,15 @@ fn is_permission_error(stderr: &str) -> bool {
 }
 
 /// Push to a PR's remote branch, handling fork PRs by adding the fork remote if needed.
-/// Uses --force-with-lease for safety. Falls back to regular push (new branch) on failure.
+/// Never force pushes: when the PR branch has commits that HEAD does not have
+/// (for example from a colleague), they are merged into HEAD first. Merge
+/// conflicts are returned as an error and nothing is pushed. Falls back to
+/// regular push (new branch) on other failures.
 ///
 /// Flow:
 /// 1. Query gh pr view for fork info
 /// 2. Same-repo PR: push to origin
-/// 3. Fork PR: add fork remote if needed, fetch, push
+/// 3. Fork PR: add fork remote if needed, push
 /// 4. On failure: fall back to regular push (git push -u origin HEAD)
 pub fn git_push_to_pr(
     repo_path: &str,
@@ -1234,49 +1287,43 @@ pub fn git_push_to_pr(
     let is_cross_repository = pr_info["isCrossRepository"].as_bool().unwrap_or(false);
 
     if !is_cross_repository {
-        // Same-repo PR: push HEAD to origin/{head_ref_name} with --force-with-lease
-        let refspec = format!("HEAD:{head_ref_name}");
-        log::trace!("Same-repo PR, pushing {refspec} to origin");
-        let output = wsl_aware_command("git", Some(Path::new(repo_path)))
-            .args(["push", "--force-with-lease", "origin", &refspec])
-            .output()
-            .map_err(|e| format!("Failed to run git push: {e}"))?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let result = if stdout.is_empty() { stderr } else { stdout };
-            log::trace!("Successfully pushed to origin/{head_ref_name}");
-            return Ok(PushResult {
-                output: result,
-                fell_back: false,
-                permission_denied: false,
-                pushed_remote: Some("origin".to_string()),
-                pushed_branch: Some(head_ref_name.to_string()),
-            });
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if is_permission_error(&stderr) {
-                log::warn!("Permission denied pushing to origin/{head_ref_name}: {stderr}");
+        // Same-repo PR: push HEAD to origin/{head_ref_name}, merging new remote commits first
+        log::trace!("Same-repo PR, pushing HEAD:{head_ref_name} to origin");
+        match push_head_to_branch(repo_path, "origin", head_ref_name) {
+            Ok(result) => {
+                log::trace!("Successfully pushed to origin/{head_ref_name}");
                 return Ok(PushResult {
-                    output: stderr,
+                    output: result,
                     fell_back: false,
-                    permission_denied: true,
+                    permission_denied: false,
+                    pushed_remote: Some("origin".to_string()),
+                    pushed_branch: Some(head_ref_name.to_string()),
+                });
+            }
+            Err(BranchPushError::Merge(e)) => return Err(e),
+            Err(BranchPushError::Push(stderr)) => {
+                if is_permission_error(&stderr) {
+                    log::warn!("Permission denied pushing to origin/{head_ref_name}: {stderr}");
+                    return Ok(PushResult {
+                        output: stderr,
+                        fell_back: false,
+                        permission_denied: true,
+                        pushed_remote: None,
+                        pushed_branch: None,
+                    });
+                }
+                log::warn!(
+                "Failed to push to origin/{head_ref_name}, falling back to regular push: {stderr}"
+            );
+                let fallback_output = git_push(repo_path, None)?;
+                return Ok(PushResult {
+                    output: fallback_output,
+                    fell_back: true,
+                    permission_denied: false,
                     pushed_remote: None,
                     pushed_branch: None,
                 });
             }
-            log::warn!(
-                "Failed to push to origin/{head_ref_name}, falling back to regular push: {stderr}"
-            );
-            let fallback_output = git_push(repo_path, None)?;
-            return Ok(PushResult {
-                output: fallback_output,
-                fell_back: true,
-                permission_denied: false,
-                pushed_remote: None,
-                pushed_branch: None,
-            });
         }
     }
 
@@ -1340,59 +1387,41 @@ pub fn git_push_to_pr(
             fork_owner.to_string()
         });
 
-    // Fetch the branch from the fork remote
-    log::trace!("Fetching {head_ref_name} from {remote_name}");
-    let fetch_output = wsl_aware_command("git", Some(Path::new(repo_path)))
-        .args(["fetch", &remote_name, head_ref_name])
-        .output()
-        .map_err(|e| format!("Failed to fetch from fork: {e}"))?;
-
-    if !fetch_output.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch_output.stderr).to_string();
-        log::warn!("Fetch from fork failed (continuing with push): {stderr}");
-    }
-
-    // Push HEAD to the fork remote with --force-with-lease
-    let refspec = format!("HEAD:{head_ref_name}");
-    log::trace!("Pushing {refspec} to {remote_name} --force-with-lease");
-    let push_output = wsl_aware_command("git", Some(Path::new(repo_path)))
-        .args(["push", "--force-with-lease", &remote_name, &refspec])
-        .output()
-        .map_err(|e| format!("Failed to push to fork: {e}"))?;
-
-    if push_output.status.success() {
-        let stdout = String::from_utf8_lossy(&push_output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&push_output.stderr).to_string();
-        let result = if stdout.is_empty() { stderr } else { stdout };
-        log::trace!("Successfully pushed to {remote_name}/{head_ref_name}");
-        Ok(PushResult {
-            output: result,
-            fell_back: false,
-            permission_denied: false,
-            pushed_remote: Some(remote_name.clone()),
-            pushed_branch: Some(head_ref_name.to_string()),
-        })
-    } else {
-        let stderr = String::from_utf8_lossy(&push_output.stderr).to_string();
-        if is_permission_error(&stderr) {
-            log::warn!("Permission denied pushing to {remote_name}/{head_ref_name}: {stderr}");
-            return Ok(PushResult {
-                output: stderr,
+    // Push HEAD to the fork remote, merging new remote commits first (never forces)
+    log::trace!("Pushing HEAD:{head_ref_name} to {remote_name}");
+    match push_head_to_branch(repo_path, &remote_name, head_ref_name) {
+        Ok(result) => {
+            log::trace!("Successfully pushed to {remote_name}/{head_ref_name}");
+            Ok(PushResult {
+                output: result,
                 fell_back: false,
-                permission_denied: true,
+                permission_denied: false,
+                pushed_remote: Some(remote_name.clone()),
+                pushed_branch: Some(head_ref_name.to_string()),
+            })
+        }
+        Err(BranchPushError::Merge(e)) => Err(e),
+        Err(BranchPushError::Push(stderr)) => {
+            if is_permission_error(&stderr) {
+                log::warn!("Permission denied pushing to {remote_name}/{head_ref_name}: {stderr}");
+                return Ok(PushResult {
+                    output: stderr,
+                    fell_back: false,
+                    permission_denied: true,
+                    pushed_remote: None,
+                    pushed_branch: None,
+                });
+            }
+            log::warn!("Failed to push to {remote_name}/{head_ref_name}, falling back to regular push: {stderr}");
+            let fallback_output = git_push(repo_path, None)?;
+            Ok(PushResult {
+                output: fallback_output,
+                fell_back: true,
+                permission_denied: false,
                 pushed_remote: None,
                 pushed_branch: None,
-            });
+            })
         }
-        log::warn!("Failed to push to {remote_name}/{head_ref_name}, falling back to regular push: {stderr}");
-        let fallback_output = git_push(repo_path, None)?;
-        Ok(PushResult {
-            output: fallback_output,
-            fell_back: true,
-            permission_denied: false,
-            pushed_remote: None,
-            pushed_branch: None,
-        })
     }
 }
 
@@ -2761,7 +2790,8 @@ pub fn has_uncommitted_changes(repo_path: &str) -> bool {
 /// 1. Commits any uncommitted changes with the provided message
 /// 2. Fetches from the given remote (defaults to origin)
 /// 3. Rebases onto {remote}/{base_branch}
-/// 4. Force pushes with lease
+/// 4. Force pushes with lease and --force-if-includes (refuses to drop remote commits
+///    that the rebased branch never included)
 ///
 /// Returns an error message if any step fails
 pub fn rebase_onto_base(
@@ -2838,7 +2868,7 @@ pub fn rebase_onto_base(
     // Step 4: Force push with lease
     log::trace!("Force pushing with lease...");
     let push_output = wsl_aware_command("git", Some(Path::new(repo_path)))
-        .args(["push", "--force-with-lease"])
+        .args(["push", "--force-with-lease", "--force-if-includes"])
         .output()
         .map_err(|e| format!("Failed to push: {e}"))?;
 
@@ -3473,6 +3503,147 @@ mod tests {
             String::from_utf8_lossy(&files.stdout),
             "base.txt\nmine.txt\ntheirs.txt\n"
         );
+    }
+
+    /// Bare remote with `main` and `feature`, plus two clones of it on `feature`.
+    /// Returns (remote, mine, theirs).
+    fn setup_feature_clones(
+        root: &std::path::Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let remote = root.join("remote.git");
+        let mine = root.join("mine");
+        let theirs = root.join("theirs");
+        run_git(
+            root,
+            &["init", "--bare", "--initial-branch", "main", "remote.git"],
+        );
+        run_git(
+            root,
+            &["clone", remote.to_str().unwrap(), mine.to_str().unwrap()],
+        );
+        run_git(&mine, &["config", "user.email", "test@example.com"]);
+        run_git(&mine, &["config", "user.name", "Test"]);
+        std::fs::write(
+            mine.join("shared.txt"),
+            "base
+",
+        )
+        .unwrap();
+        run_git(&mine, &["add", "."]);
+        run_git(&mine, &["commit", "-m", "base"]);
+        run_git(&mine, &["push", "-u", "origin", "main"]);
+        run_git(&mine, &["checkout", "-b", "feature"]);
+        run_git(&mine, &["push", "-u", "origin", "feature"]);
+
+        run_git(
+            root,
+            &["clone", remote.to_str().unwrap(), theirs.to_str().unwrap()],
+        );
+        run_git(&theirs, &["config", "user.email", "colleague@example.com"]);
+        run_git(&theirs, &["config", "user.name", "Colleague"]);
+        run_git(&theirs, &["checkout", "feature"]);
+        (remote, mine, theirs)
+    }
+
+    fn commit_file(repo: &std::path::Path, name: &str, content: &str) {
+        std::fs::write(repo.join(name), content).unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", name]);
+    }
+
+    fn remote_rev(remote: &std::path::Path, rev: &str) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", rev])
+            .current_dir(remote)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn push_head_to_branch_keeps_commits_already_fetched_in_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let (remote, mine, theirs) = setup_feature_clones(dir.path());
+
+        commit_file(
+            &theirs,
+            "theirs.txt",
+            "theirs
+",
+        );
+        run_git(&theirs, &["push"]);
+        commit_file(
+            &mine, "mine.txt", "mine
+",
+        );
+        // The background status poll fetches the branch without merging it.
+        run_git(&mine, &["fetch", "origin", "feature"]);
+
+        assert!(push_head_to_branch(mine.to_str().unwrap(), "origin", "feature").is_ok());
+
+        let files = std::process::Command::new("git")
+            .args(["ls-tree", "--name-only", "feature"])
+            .current_dir(&remote)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&files.stdout),
+            "mine.txt
+shared.txt
+theirs.txt
+"
+        );
+    }
+
+    #[test]
+    fn push_head_to_branch_conflict_pushes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (remote, mine, theirs) = setup_feature_clones(dir.path());
+
+        commit_file(
+            &theirs,
+            "shared.txt",
+            "theirs
+",
+        );
+        run_git(&theirs, &["push"]);
+        let theirs_tip = remote_rev(&remote, "feature");
+        commit_file(
+            &mine,
+            "shared.txt",
+            "mine
+",
+        );
+
+        let result = push_head_to_branch(mine.to_str().unwrap(), "origin", "feature");
+
+        assert!(matches!(result, Err(BranchPushError::Merge(_))));
+        assert_eq!(remote_rev(&remote, "feature"), theirs_tip);
+    }
+
+    #[test]
+    fn rebase_onto_base_refuses_to_drop_fetched_remote_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let (remote, mine, theirs) = setup_feature_clones(dir.path());
+
+        commit_file(
+            &theirs,
+            "theirs.txt",
+            "theirs
+",
+        );
+        run_git(&theirs, &["push"]);
+        let theirs_tip = remote_rev(&remote, "feature");
+        commit_file(
+            &mine, "mine.txt", "mine
+",
+        );
+        run_git(&mine, &["fetch", "origin", "feature"]);
+
+        let result = rebase_onto_base(mine.to_str().unwrap(), "main", None, None);
+
+        assert!(result.is_err());
+        assert_eq!(remote_rev(&remote, "feature"), theirs_tip);
     }
 
     #[test]
