@@ -11952,7 +11952,8 @@ fn effective_pr_number_for_push(
 }
 
 /// Push current branch to remote. If pr_number is provided, uses PR-aware push
-/// that handles fork remotes and uses --force-with-lease.
+/// that handles fork remotes, merges new commits from the PR branch, and never
+/// force pushes.
 pub async fn git_push(
     app: tauri::AppHandle,
     worktree_path: String,

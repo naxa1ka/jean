@@ -532,13 +532,36 @@ async function runGitSync(
       toast.success('Synced with remote', { id: toastId })
     }
   } catch (error) {
+    if (String(error).includes('Merge conflicts in:')) {
+      // Pushing merged new commits from the PR branch hit conflicts
+      toast.warning('Sync resulted in merge conflicts', {
+        id: toastId,
+        duration: Infinity,
+        action: {
+          label: toastActionLabel('Resolve Conflicts'),
+          onClick: () => {
+            if (pull.onMergeConflict) {
+              pull.onMergeConflict()
+              return
+            }
+            window.dispatchEvent(
+              new CustomEvent('magic-command', {
+                detail: { command: 'resolve-conflicts' },
+              })
+            )
+          },
+        },
+      })
+      return
+    }
     toast.error(`Sync failed: ${error}`, { id: toastId })
   }
 }
 
 /**
  * Push current branch to remote. If prNumber is provided, uses PR-aware push
- * that handles fork remotes and uses --force-with-lease.
+ * that handles fork remotes, merges new commits from the PR branch, and never
+ * force pushes.
  * Falls back to creating a new branch if pushing to the PR branch fails.
  *
  * @param worktreePath - Path to the worktree/repository
