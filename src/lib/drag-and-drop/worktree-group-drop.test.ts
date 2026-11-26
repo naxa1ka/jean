@@ -202,6 +202,78 @@ describe('resolveWorktreeGroupDrop', () => {
     })
   })
 
+  describe('canvas row-state rule (rowStateById)', () => {
+    const rowStateById = new Map([
+      ['a1', 'running'],
+      ['a2', 'idle'],
+      ['b1', 'waiting'],
+      ['b2', 'idle'],
+      ['u1', 'idle'],
+    ])
+
+    it('rejects a same-group reorder onto a row in another state', () => {
+      expect(resolve(wt('a1'), onRow('a2'), { rowStateById })).toBeNull()
+    })
+
+    it('allows a same-group reorder onto a row in the same state', () => {
+      const sameState = new Map([...rowStateById, ['a1', 'idle']])
+      expect(
+        resolve(wt('a1'), onRow('a2'), { rowStateById: sameState })
+      ).toEqual({
+        kind: 'reorder',
+        worktreeIds: ['base', 'b1', 'a2', 'a1', 'c1', 'u1', 'b2'],
+      })
+    })
+
+    it('allows a move to another group for any state', () => {
+      expect(resolve(wt('a1'), onRow('b1', 'top'), { rowStateById })).toEqual({
+        kind: 'move',
+        groupId: 'g2',
+        worktreeIds: ['base', 'a1', 'b1', 'a2', 'c1', 'u1', 'b2'],
+      })
+      expect(resolve(wt('a1'), onRow('u1'), { rowStateById })).toEqual({
+        kind: 'move',
+        groupId: null,
+        worktreeIds: ['base', 'b1', 'a2', 'c1', 'u1', 'a1', 'b2'],
+      })
+    })
+
+    it('reorders to the end of its own group on its own header', () => {
+      expect(resolve(wt('a1'), onHeader('g1'), { rowStateById })).toEqual({
+        kind: 'reorder',
+        worktreeIds: ['base', 'b1', 'a2', 'a1', 'c1', 'u1', 'b2'],
+      })
+    })
+
+    it('applies the state rule to all rows when the project has no groups', () => {
+      expect(
+        resolve(wt('a1'), onRow('b2'), { groups: [], rowStateById })
+      ).toBeNull()
+      expect(
+        resolve(wt('a2'), onRow('b2'), { groups: [], rowStateById })
+      ).toEqual({
+        kind: 'reorder',
+        worktreeIds: ['base', 'a1', 'b1', 'c1', 'u1', 'b2', 'a2'],
+      })
+    })
+
+    it('builds the result from the persisted order, not the display order', () => {
+      // Display (grouped, state-sorted) would be: base, a1, a2, b1, b2, c1, u1.
+      // The persisted order interleaves groups; the result keeps that order.
+      const persisted = ['base', 'b2', 'a2', 'u1', 'a1', 'c1', 'b1']
+      expect(
+        resolve(wt('a2'), onRow('b1', 'bottom'), {
+          fullOrderedIds: persisted,
+          rowStateById,
+        })
+      ).toEqual({
+        kind: 'move',
+        groupId: 'g2',
+        worktreeIds: ['base', 'b2', 'u1', 'a1', 'c1', 'b1', 'a2'],
+      })
+    })
+  })
+
   describe('group on header', () => {
     it('reorders groups before or after the target', () => {
       expect(resolve(grp('g3'), onHeader('g1', 'top'))).toEqual({

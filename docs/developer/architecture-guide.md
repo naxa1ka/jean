@@ -393,6 +393,7 @@ Each major system has focused documentation:
 - **[Keyboard Shortcuts](./keyboard-shortcuts.md)** - Native event handling
 - **[Native Menus](./menus.md)** - Cross-platform menu integration
 - **[Data Persistence](./data-persistence.md)** - Disk storage patterns
+- **[Worktree Groups](./worktree-groups.md)** - Group data model, commands, drop resolver, sidebar and canvas rules
 - **[State Management](./state-management.md)** - Zustand + TanStack Query patterns
 - **[Notifications](./notifications.md)** - Toast and native notifications
 - **[Logging](./logging.md)** - Rust and TypeScript logging
@@ -663,6 +664,8 @@ interaction finishes.
 ### Canvas View
 
 **ProjectCanvasView** (`src/components/dashboard/ProjectCanvasView.tsx`) shows sessions across all worktrees in a project, grouped by worktree with section headers. Sessions are opened via `SessionChatModal` overlay.
+
+When the project has worktree groups, the canvas shows group headers instead of row-state headers; see [Worktree Groups](./worktree-groups.md).
 
 Shared infrastructure in `src/components/chat/`:
 

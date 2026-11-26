@@ -153,22 +153,6 @@ export function moveToGroupEndOrder(
   )
 }
 
-/**
- * Whether two worktrees show in the same group (both ungrouped counts). The
- * sidebar reorder drag only drops inside one group; unknown ids never match.
- */
-export function isSameWorktreeGroup(
-  sourceId: string,
-  targetId: string,
-  worktreesById: ReadonlyMap<string, Worktree>,
-  groups: readonly WorktreeGroup[] | undefined
-): boolean {
-  const source = worktreesById.get(sourceId)
-  const target = worktreesById.get(targetId)
-  if (!source || !target) return false
-  return effectiveGroupId(source, groups) === effectiveGroupId(target, groups)
-}
-
 /** Collapse key of a group header: the group UUID, or the project id for Ungrouped. */
 export function worktreeGroupCollapseKey(
   projectId: string,

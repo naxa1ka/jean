@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest'
 import {
   applyWorktreeDropSnapshot,
   getClosestVerticalEdge,
+  getSnapshotFromWorktreeListElement,
   getWorktreeDropTargetForScope,
+  getWorktreeListDropSnapshot,
+  getWorktreeListElement,
 } from './worktree-reorder-ux'
 import {
   DRAG_SCOPE_CANVAS_WORKTREE_LIST,
   DRAG_SCOPE_WORKTREE_LIST,
+  DROP_TYPE_WORKTREE_GROUP_HEADER,
 } from './types'
 
 describe('worktree reorder UX helpers', () => {
@@ -78,5 +82,68 @@ describe('worktree reorder UX helpers', () => {
         DRAG_SCOPE_CANVAS_WORKTREE_LIST
       )?.data.worktreeId
     ).toBe('canvas-target')
+  })
+
+  it('picks the canvas header of this project, not the sidebar or another project', () => {
+    const header = (scope: string, projectId: string, groupId: string) => ({
+      data: {
+        type: DROP_TYPE_WORKTREE_GROUP_HEADER,
+        projectId,
+        groupId,
+        scope,
+      },
+    })
+    const dropTargets = [
+      header(DRAG_SCOPE_WORKTREE_LIST, 'project', 'sidebar-group'),
+      header(DRAG_SCOPE_CANVAS_WORKTREE_LIST, 'other', 'other-group'),
+      header(DRAG_SCOPE_CANVAS_WORKTREE_LIST, 'project', 'canvas-group'),
+    ]
+
+    expect(
+      getWorktreeListDropSnapshot(
+        dropTargets,
+        DRAG_SCOPE_CANVAS_WORKTREE_LIST,
+        'project'
+      )
+    ).toEqual({
+      targetId: 'canvas-group',
+      closestEdge: null,
+      kind: 'header',
+      groupId: 'canvas-group',
+    })
+  })
+
+  it('finds canvas headers only inside the canvas list (native fallback)', () => {
+    document.body.innerHTML = `
+      <div data-testid="sidebar">
+        <div data-worktree-group-id="g1" data-worktree-group-project-id="project" data-worktree-group-scope="worktree-list"><span id="sidebar-name"></span></div>
+      </div>
+      <div data-testid="canvas-worktree-list">
+        <div data-worktree-group-id="g1" data-worktree-group-project-id="other" data-worktree-group-scope="canvas-worktree-list"><span id="other-name"></span></div>
+        <div data-worktree-group-id="g1" data-worktree-group-project-id="project" data-worktree-group-scope="canvas-worktree-list"><span id="canvas-name"></span></div>
+      </div>`
+    const container = document.querySelector<HTMLElement>(
+      '[data-testid="canvas-worktree-list"]'
+    )
+    const find = (id: string) =>
+      getWorktreeListElement({
+        eventTarget: document.getElementById(id),
+        container,
+        scope: DRAG_SCOPE_CANVAS_WORKTREE_LIST,
+        projectId: 'project',
+      })
+
+    expect(find('sidebar-name')).toBeNull()
+    expect(find('other-name')).toBeNull()
+    const element = find('canvas-name')
+    expect(element?.dataset.worktreeGroupProjectId).toBe('project')
+    expect(
+      getSnapshotFromWorktreeListElement({
+        element,
+        draggingId: 'w1',
+        clientY: 0,
+      })
+    ).toMatchObject({ targetId: 'g1', kind: 'header', groupId: 'g1' })
+    document.body.innerHTML = ''
   })
 })

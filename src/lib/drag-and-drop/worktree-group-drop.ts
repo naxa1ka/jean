@@ -33,6 +33,13 @@ export interface ResolveWorktreeGroupDropInput {
   groups: readonly WorktreeGroup[]
   source: WorktreeGroupDropSource
   target: WorktreeGroupDropTarget
+  /**
+   * Canvas only: row state by worktree id. When set, a row-on-row drop inside
+   * one group needs both rows in the same state (the canvas sorts rows by
+   * state, so any other drop would jump back). Moves to another group are
+   * allowed for any state.
+   */
+  rowStateById?: ReadonlyMap<string, string>
 }
 
 function sortedGroupIds(groups: readonly WorktreeGroup[]): string[] {
@@ -72,6 +79,7 @@ export function resolveWorktreeGroupDrop({
   groups,
   source,
   target,
+  rowStateById,
 }: ResolveWorktreeGroupDropInput): WorktreeGroupDropResult | null {
   if (source.projectId !== projectId || target.projectId !== projectId) {
     return null
@@ -131,7 +139,14 @@ export function resolveWorktreeGroupDrop({
   )
   if (!worktreeIds) return null
   const targetGroupId = effectiveGroupId(over, groups)
-  return targetGroupId === sourceGroupId
-    ? { kind: 'reorder', worktreeIds }
-    : { kind: 'move', groupId: targetGroupId, worktreeIds }
+  if (targetGroupId !== sourceGroupId) {
+    return { kind: 'move', groupId: targetGroupId, worktreeIds }
+  }
+  if (
+    rowStateById &&
+    rowStateById.get(moved.id) !== rowStateById.get(over.id)
+  ) {
+    return null
+  }
+  return { kind: 'reorder', worktreeIds }
 }
